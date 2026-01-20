@@ -245,6 +245,9 @@ export function suggestVendorGroupings(
     if (assignedVendors.has(vendorId)) continue;
 
     for (const [parentId, parentNorm] of parentNormalized) {
+      // Skip if vendor would match itself (happens when same vendors are in both lists)
+      if (vendorId === parentId) continue;
+
       const similarity = lcpSimilarity(normalized, parentNorm);
       if (similarity >= cfg.similarityThreshold) {
         const parent = existingParents.find((p) => p.id === parentId);

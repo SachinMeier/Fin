@@ -377,6 +377,29 @@ describe("suggestVendorGroupings", () => {
     expect(suggestions).toHaveLength(0);
   });
 
+  it("does not suggest grouping a vendor with itself when vendor is also in existingParents", () => {
+    // This is the bug condition: when the same vendors are passed as both
+    // vendors to analyze AND as existingParents, each vendor would match
+    // itself with 100% similarity, creating single-vendor "groups"
+    const vendors: VendorInfo[] = [
+      { id: 1, name: "STARBUCKS #1234", parent_vendor_id: null },
+      { id: 2, name: "WALMART #5678", parent_vendor_id: null },
+      { id: 3, name: "TARGET #9999", parent_vendor_id: null },
+    ];
+
+    // Same vendors passed as existingParents (simulates the bug condition)
+    const existingParents: VendorInfo[] = [
+      { id: 1, name: "STARBUCKS #1234", parent_vendor_id: null },
+      { id: 2, name: "WALMART #5678", parent_vendor_id: null },
+      { id: 3, name: "TARGET #9999", parent_vendor_id: null },
+    ];
+
+    const suggestions = suggestVendorGroupings(vendors, existingParents);
+
+    // Should NOT create any groups - no vendor should be grouped with itself
+    expect(suggestions).toHaveLength(0);
+  });
+
   it("creates multiple groups for different merchants", () => {
     const vendors: VendorInfo[] = [
       { id: 1, name: "STARBUCKS #1234", parent_vendor_id: null },
