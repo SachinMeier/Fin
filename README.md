@@ -52,7 +52,7 @@ Expenses
   - Food & Drink
     - Groceries
     - Restaurants
-    - Coffee Shops
+    - Cafes
     - Bars
     - Delivery
   - Transportation
