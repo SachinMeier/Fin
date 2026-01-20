@@ -37,10 +37,10 @@ export interface VendorInfo {
  *
  * Normalization steps:
  * 1. Convert to lowercase
- * 2. Remove special characters (*, #, -, etc.)
- * 3. Collapse multiple spaces
- * 4. Strip trailing numbers (likely transaction IDs)
- * 5. Trim whitespace
+ * 2. Remove special characters (*, #, -, /, etc.)
+ * 3. Remove entire tokens (words) containing digits - they are noise
+ *    (transaction IDs like "1234ABC", store numbers, dates, reference codes)
+ * 4. Collapse multiple spaces and trim
  *
  * @param name - The original vendor name
  * @returns The normalized name (for matching only, not storage)
@@ -53,21 +53,13 @@ export function normalizeVendorName(name: string): string {
   normalized = normalized.replace(/[*#\-_@&'".,:;!()[\]{}/\\]/g, " ");
 
   // Collapse multiple spaces into one
-  normalized = normalized.replace(/\s+/g, " ");
-
-  // Strip trailing transaction IDs that are alphanumeric with at least one digit
-  // e.g., "1234ABC", "ABC123", "1A2B3C" but NOT pure words like "eats"
-  normalized = normalized.replace(/\s+(?=[a-z]*\d)[a-z0-9]{4,}\s*$/i, "");
-
-  // Strip trailing pure numbers (store numbers, transaction IDs)
-  normalized = normalized.replace(/\s*\d+\s*$/, "");
-
-  // Strip long numbers (4+ digits) in the middle surrounded by spaces
-  // e.g., "STARBUCKS 12345 NYC" -> "STARBUCKS NYC"
-  normalized = normalized.replace(/\s+\d{4,}\s+/g, " ");
-
-  // Trim and collapse spaces again after removals
   normalized = normalized.replace(/\s+/g, " ").trim();
+
+  // Remove entire tokens (words) that contain any digit
+  // This removes transaction IDs like "1234ABC", store numbers, etc.
+  const words = normalized.split(" ");
+  const filteredWords = words.filter((word) => !/\d/.test(word));
+  normalized = filteredWords.join(" ");
 
   return normalized;
 }

@@ -246,6 +246,66 @@ router.post("/bulk-categorize", (req, res) => {
   res.redirect("/vendors?category=uncategorized");
 });
 
+// POST /vendors/group - Create a new parent vendor and group selected vendors under it
+router.post("/group", (req, res) => {
+  const db = getDatabase();
+  const vendorIds: number[] = Array.isArray(req.body.vendor_ids)
+    ? req.body.vendor_ids.map(Number)
+    : req.body.vendor_ids
+      ? [Number(req.body.vendor_ids)]
+      : [];
+  const parentName = (req.body.parent_name || "").trim();
+  const categoryIdRaw = req.body.category_id;
+  const categoryId =
+    categoryIdRaw && categoryIdRaw !== "" ? Number(categoryIdRaw) : UNCATEGORIZED_CATEGORY_ID;
+
+  // Validate inputs
+  if (vendorIds.length < 2) {
+    res.redirect("/vendors?error=Select at least 2 vendors to group");
+    return;
+  }
+
+  if (!parentName) {
+    res.redirect("/vendors?error=Parent vendor name is required");
+    return;
+  }
+
+  db.transaction(() => {
+    // Check if a vendor with this name already exists
+    const existingVendor = db
+      .prepare("SELECT id FROM vendors WHERE name = ?")
+      .get(parentName) as { id: number } | undefined;
+
+    let parentId: number;
+
+    if (existingVendor) {
+      // Don't allow using an existing vendor as the parent if it's one of the selected children
+      if (vendorIds.includes(existingVendor.id)) {
+        throw new Error("Parent name matches one of the selected vendors");
+      }
+      parentId = existingVendor.id;
+      // Optionally update the category of the existing parent
+      if (categoryId !== UNCATEGORIZED_CATEGORY_ID) {
+        db.prepare("UPDATE vendors SET category_id = ? WHERE id = ?").run(categoryId, parentId);
+      }
+    } else {
+      // Create a new parent vendor
+      const parentResult = db
+        .prepare("INSERT INTO vendors (name, category_id) VALUES (?, ?)")
+        .run(parentName, categoryId);
+      parentId = Number(parentResult.lastInsertRowid);
+    }
+
+    // Update child vendors to point to the parent
+    const placeholders = vendorIds.map(() => "?").join(",");
+    db.prepare(
+      `UPDATE vendors SET parent_vendor_id = ? WHERE id IN (${placeholders})`
+    ).run(parentId, ...vendorIds);
+  })();
+
+  res.redirect("/vendors");
+});
+
 // ============================================================================
 // Render Functions
 // ============================================================================
@@ -284,52 +344,184 @@ function renderVendorsListPage(
     </form>
   `;
 
-  const tableHtml = renderTable({
-    columns: [
-      {
-        key: "name",
-        label: "Name",
-        render: (v, row) => {
-          const indent = "\u00A0\u00A0\u00A0\u00A0".repeat(row.depth);
-          const prefix = row.depth > 0 ? "└ " : "";
-          return `${indent}${prefix}${escapeHtml(String(v))}`;
-        },
-      },
-      {
-        key: "category_name",
-        label: "Category",
-        render: (_v, row) =>
-          renderInlineCategorySelect({
-            vendorId: row.id,
-            currentCategoryId: row.category_id,
-            currentCategoryName: row.category_name,
-            currentCategoryColor: row.category_color,
-            categories: inlineSelectCategories,
-          }),
-      },
-      { key: "transaction_count", label: "Transactions", align: "right" },
-      {
-        key: "total_amount",
-        label: "Total",
-        numeric: true,
-        render: (v) => formatCurrency(Number(v) || 0),
-      },
-    ],
-    rows: vendors,
-    rowHref: (row) => `/vendors/${row.id}`,
-    emptyMessage: currentFilter
-      ? "No vendors match this filter."
-      : "No vendors yet.",
-  });
+  // Category options for the grouping form
+  const groupCategoryOptions = categoryTree
+    .map((c) => {
+      const indent = "\u00A0\u00A0".repeat(c.depth);
+      return `<option value="${c.id}">${indent}${escapeHtml(c.name)}</option>`;
+    })
+    .join("");
+
+  // Build vendor rows with checkboxes
+  const vendorRowsHtml = vendors.length === 0
+    ? `<tr><td colspan="5" class="px-6 py-8 text-center text-gray-400 dark:text-gray-500">${currentFilter ? "No vendors match this filter." : "No vendors yet."}</td></tr>`
+    : vendors.map((v) => {
+        const indent = "\u00A0\u00A0\u00A0\u00A0".repeat(v.depth);
+        const prefix = v.depth > 0 ? "\u2514 " : "";
+        // Only allow selecting root vendors that don't have children
+        const hasChildren = vendors.some((ov) => ov.parent_vendor_id === v.id);
+        const canSelect = v.parent_vendor_id === null && !hasChildren;
+
+        const checkbox = canSelect
+          ? `<input type="checkbox" name="vendor_ids" value="${v.id}" class="vendor-checkbox h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500 dark:bg-gray-800" />`
+          : `<span class="w-4 h-4 inline-block"></span>`;
+
+        const categoryCell = renderInlineCategorySelect({
+          vendorId: v.id,
+          currentCategoryId: v.category_id,
+          currentCategoryName: v.category_name,
+          currentCategoryColor: v.category_color,
+          categories: inlineSelectCategories,
+        });
+
+        return `
+          <tr class="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50">
+            <td class="px-3 py-3 text-sm">
+              ${checkbox}
+            </td>
+            <td class="px-3 py-3 text-sm">
+              <a href="/vendors/${v.id}" class="hover:underline">${indent}${prefix}${escapeHtml(v.name)}</a>
+            </td>
+            <td class="px-3 py-3 text-sm">${categoryCell}</td>
+            <td class="px-3 py-3 text-sm text-right">${v.transaction_count}</td>
+            <td class="px-3 py-3 text-sm text-right font-mono">${formatCurrency(v.total_amount)}</td>
+          </tr>
+        `;
+      }).join("");
+
+  const tableHtml = `
+    <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-sm overflow-hidden">
+      <table class="w-full">
+        <thead>
+          <tr class="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
+            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider w-10">
+              <input type="checkbox" id="select-all-vendors" class="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500 dark:bg-gray-800" />
+            </th>
+            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Name</th>
+            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Category</th>
+            <th class="px-3 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Transactions</th>
+            <th class="px-3 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${vendorRowsHtml}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  // Group vendors form (pinned to bottom, shown when vendors selected)
+  const groupFormHtml = `
+    <div id="group-vendors-panel" class="hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 shadow-lg p-4 z-50">
+      <form method="POST" action="/vendors/group" id="group-vendors-form" class="max-w-4xl mx-auto">
+        <div id="group-selected-inputs"></div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
+          <div>
+            <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1" for="parent_name">Parent Vendor Name</label>
+            <input type="text" id="parent_name" name="parent_name" required placeholder="e.g., Amazon" class="${inputClasses} w-full" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1" for="group_category_id">Category (optional)</label>
+            <select id="group_category_id" name="category_id" class="${inputClasses} w-full">
+              <option value="">Uncategorized</option>
+              ${groupCategoryOptions}
+            </select>
+          </div>
+          <div>
+            <button type="submit" id="group-vendors-btn" disabled class="w-full px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed dark:disabled:bg-gray-700 dark:disabled:text-gray-500 transition-colors">
+              Group Vendors
+            </button>
+          </div>
+          <div class="flex items-center">
+            <span id="selected-count" class="text-sm text-gray-500 dark:text-gray-400">0 selected</span>
+          </div>
+        </div>
+      </form>
+    </div>
+  `;
+
+  // JavaScript for handling vendor selection and grouping
+  const scriptHtml = `
+    <script>
+      (function() {
+        var checkboxes = document.querySelectorAll('.vendor-checkbox');
+        var selectAllCheckbox = document.getElementById('select-all-vendors');
+        var groupPanel = document.getElementById('group-vendors-panel');
+        var selectedInputsContainer = document.getElementById('group-selected-inputs');
+        var selectedCount = document.getElementById('selected-count');
+        var groupBtn = document.getElementById('group-vendors-btn');
+        var parentNameInput = document.getElementById('parent_name');
+
+        function updateUI() {
+          var selected = Array.from(checkboxes).filter(function(cb) { return cb.checked; });
+          var count = selected.length;
+          var hasName = parentNameInput.value.trim().length > 0;
+
+          // Show/hide panel based on selection
+          if (count >= 1) {
+            groupPanel.classList.remove('hidden');
+          } else {
+            groupPanel.classList.add('hidden');
+          }
+
+          // Enable button only if 2+ vendors selected AND parent name entered
+          groupBtn.disabled = !(count >= 2 && hasName);
+
+          // Update selected count display
+          selectedCount.textContent = count + ' selected';
+
+          // Update hidden inputs for form submission
+          selectedInputsContainer.innerHTML = selected.map(function(cb) {
+            return '<input type="hidden" name="vendor_ids" value="' + cb.value + '" />';
+          }).join('');
+
+          // Update select all checkbox state
+          if (count === 0) {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = false;
+          } else if (count === checkboxes.length) {
+            selectAllCheckbox.checked = true;
+            selectAllCheckbox.indeterminate = false;
+          } else {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = true;
+          }
+        }
+
+        // Handle individual checkbox changes
+        checkboxes.forEach(function(cb) {
+          cb.addEventListener('change', updateUI);
+        });
+
+        // Handle parent name input changes
+        parentNameInput.addEventListener('input', updateUI);
+
+        // Handle select all
+        selectAllCheckbox.addEventListener('change', function() {
+          var isChecked = this.checked;
+          checkboxes.forEach(function(cb) {
+            cb.checked = isChecked;
+          });
+          updateUI();
+        });
+
+        // Initial state
+        updateUI();
+      })();
+    </script>
+  `;
 
   const content = `
     <h1 class="text-2xl font-semibold mb-2">Vendors</h1>
     <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
-      A list of all the vendors you've transacted with across all statements. Deduplication is still a Work in Progress.
-      You can manually categorize these vendors or use <a href="/rules" class="underline hover:text-gray-700 dark:hover:text-gray-300">Rules</a> to do so programmatically.
+      A list of all the vendors you've transacted with across all statements.
+      Select multiple root vendors (without children) to group them under a new parent.
+      You can also use <a href="/rules" class="underline hover:text-gray-700 dark:hover:text-gray-300">Rules</a> for automatic grouping suggestions.
     </p>
     ${filterHtml}
     ${tableHtml}
+    ${groupFormHtml}
+    ${scriptHtml}
   `;
 
   return layout({ title: "Vendors", content, activePath: "/vendors" });

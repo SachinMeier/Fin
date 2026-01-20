@@ -41,37 +41,44 @@ describe("normalizeVendorName", () => {
     });
   });
 
-  describe("transaction ID stripping", () => {
-    it("strips trailing numbers and alphanumeric IDs", () => {
-      // "1234XYZ" contains digits so it's stripped as a transaction ID
+  describe("number stripping", () => {
+    it("removes entire tokens containing digits", () => {
+      // Tokens (words) containing ANY digit are removed entirely
+      // This removes transaction IDs like "1234ABC", store numbers, etc.
       expect(normalizeVendorName("AMAZON*1234XYZ")).toBe("amazon");
       expect(normalizeVendorName("STARBUCKS 12345")).toBe("starbucks");
       expect(normalizeVendorName("UBER EATS 98765")).toBe("uber eats");
       expect(normalizeVendorName("WHOLEFDS MKT 10234")).toBe("wholefds mkt");
     });
 
-    it("strips long numbers in middle (store numbers)", () => {
+    it("removes tokens with digits in middle of names", () => {
       expect(normalizeVendorName("STARBUCKS 12345 NYC")).toBe("starbucks nyc");
       expect(normalizeVendorName("TARGET 00012345 MINNEAPOLIS")).toBe("target minneapolis");
     });
 
-    it("preserves short meaningful numbers", () => {
-      // Numbers less than 4 digits are preserved as they might be meaningful
-      expect(normalizeVendorName("7-ELEVEN")).toBe("7 eleven");
-      expect(normalizeVendorName("24 HOUR FITNESS")).toBe("24 hour fitness");
+    it("removes entire tokens with digits including mixed alphanumeric", () => {
+      // Tokens like "7-ELEVEN" become "7 eleven" after special char removal,
+      // then "7" is removed as it contains a digit
+      expect(normalizeVendorName("7-ELEVEN")).toBe("eleven");
+      expect(normalizeVendorName("24 HOUR FITNESS")).toBe("hour fitness");
+      // Mixed alphanumeric tokens are removed entirely
+      expect(normalizeVendorName("AMAZON*1234ABC")).toBe("amazon");
+      expect(normalizeVendorName("CODE5XYZ STORE")).toBe("store");
     });
   });
 
   describe("real-world vendor name examples", () => {
     it("normalizes Amazon variants to same base", () => {
-      // All Amazon variants should normalize to "amazon" for grouping
+      // All Amazon variants normalize to "amazon" - tokens with digits removed entirely
       expect(normalizeVendorName("AMAZON*1234ABC")).toBe("amazon");
       expect(normalizeVendorName("AMAZON*5678XYZ")).toBe("amazon");
       expect(normalizeVendorName("AMAZON.COM*1234")).toBe("amazon com");
+      expect(normalizeVendorName("AMAZON*1234")).toBe("amazon");
+      expect(normalizeVendorName("AMAZON*5678")).toBe("amazon");
     });
 
     it("normalizes AMZN variants (different from Amazon)", () => {
-      // AMZN is a different abbreviation, normalizes differently
+      // AMZN is a different abbreviation - alphanumeric tokens removed
       expect(normalizeVendorName("AMZN MKTP US*1A2B3C")).toBe("amzn mktp us");
     });
 
@@ -83,10 +90,9 @@ describe("normalizeVendorName", () => {
     });
 
     it("normalizes Uber variants to same base", () => {
-      // Slashes are removed, trailing numbers stripped
-      // "UBER TRIP 12/15" -> "uber trip 12 15" -> trailing "15" stripped -> "uber trip 12"
-      expect(normalizeVendorName("UBER TRIP 12/15")).toBe("uber trip 12");
-      expect(normalizeVendorName("UBER TRIP 12/20")).toBe("uber trip 12");
+      // All numbers stripped, slashes removed
+      expect(normalizeVendorName("UBER TRIP 12/15")).toBe("uber trip");
+      expect(normalizeVendorName("UBER TRIP 12/20")).toBe("uber trip");
       expect(normalizeVendorName("UBER *EATS")).toBe("uber eats");
       expect(normalizeVendorName("UBER* TRIP")).toBe("uber trip");
     });
