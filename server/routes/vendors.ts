@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { getDatabase } from "../db/index.js";
 import { getCategoryTreeFlat, CategoryWithDepth } from "../db/categoryQueries.js";
-import { getVendorTreeFlat, wouldCreateVendorCycle, getRootVendors, updateVendorCategoryWithDescendants, getVendorAncestors, VendorWithDepth, Vendor as VendorFromQueries } from "../db/vendorQueries.js";
+import { getVendorTreeFlat, wouldCreateVendorCycle, getRootVendors, getParentVendorsWithChildren, updateVendorCategoryWithDescendants, getVendorAncestors, VendorWithDepth, Vendor as VendorFromQueries } from "../db/vendorQueries.js";
 import { UNCATEGORIZED_CATEGORY_ID } from "../db/migrations.js";
 import {
   suggestVendorGroupings,
@@ -420,8 +420,11 @@ router.post("/suggest-groupings", (_req, res) => {
   // Get existing parent vendors for potential matching
   const existingParents = getRootVendors();
 
+  // Get parents that already have children (for sibling matching)
+  const parentsWithChildren = getParentVendorsWithChildren();
+
   // Generate suggestions
-  const suggestions = suggestVendorGroupings(vendors, existingParents);
+  const suggestions = suggestVendorGroupings(vendors, existingParents, parentsWithChildren);
 
   // Convert to display format
   const groupingSuggestions: GroupingSuggestionDisplay[] = suggestions.map((s, idx) => ({
