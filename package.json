@@ -4,7 +4,9 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch server/index.ts"
+    "dev": "tsx watch server/index.ts",
+    "test": "vitest",
+    "test:run": "vitest run"
   },
   "dependencies": {
     "better-sqlite3": "^11.0.0",
@@ -17,6 +19,7 @@
     "@types/multer": "^1.4.11",
     "@types/node": "^20.10.0",
     "tsx": "^4.7.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vitest": "^4.0.17"
   }
 }

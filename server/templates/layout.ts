@@ -17,7 +17,9 @@ interface NavLink {
 const navLinks: NavLink[] = [
   { label: "Home", href: "/" },
   { label: "Statements", href: "/statements" },
-  { label: "Import", href: "/statements/import" },
+  { label: "Vendors", href: "/vendors" },
+  { label: "Categories", href: "/categories" },
+  { label: "Rules", href: "/rules" },
 ];
 
 function renderNavbar(activePath?: string): string {

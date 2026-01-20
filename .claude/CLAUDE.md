@@ -47,6 +47,10 @@ This guide contains authoritative rules for:
 - **NO** double imports from same module (use namespace import only)
 - **TEST** using `it.effect(...)` for Effect-based tests (never plain `it(...)`)
 
+### Database Rules
+
+- **NEVER** auto-populate new database fields/schema with seed data unless explicitly asked
+
 ## TypeScript Configuration
 
 - **Strict mode enabled** - All type checks enforced
