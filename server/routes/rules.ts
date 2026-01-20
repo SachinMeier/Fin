@@ -772,9 +772,8 @@ function renderVendorGroupingsPage(suggestions: GroupingSuggestionDisplay[]): st
     </div>
 
     <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
-      We found vendors that appear to be from the same merchant based on name similarity.
-      Review the suggestions below and apply the groupings you want to keep.
-      Parent vendors will be created with cleaned names (no numbers or special characters).
+      This page identifies vendors that may be from the same merchant based on name similarity.
+      Applying a grouping creates a parent vendor with a cleaned name (no numbers or special characters).
     </p>
 
     ${suggestionsHtml}
