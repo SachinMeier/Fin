@@ -198,3 +198,37 @@ export function updateVendorCategoryWithDescendants(vendorId: number, categoryId
 
   return result.changes;
 }
+
+/**
+ * A parent vendor with its direct children
+ */
+export interface ParentWithChildren {
+  parent: Vendor;
+  children: Vendor[];
+}
+
+/**
+ * Get all parent vendors (vendors that have at least one child) along with their children.
+ * Used for vendor grouping to match new vendors against both parents and siblings.
+ */
+export function getParentVendorsWithChildren(): ParentWithChildren[] {
+  const db = getDatabase();
+
+  // Get all vendors that are parents (have at least one child)
+  const parents = db
+    .prepare(
+      `
+      SELECT DISTINCT p.id, p.name, p.address, p.category_id, p.parent_vendor_id
+      FROM vendors p
+      WHERE EXISTS (SELECT 1 FROM vendors c WHERE c.parent_vendor_id = p.id)
+      ORDER BY p.name
+      `
+    )
+    .all() as Vendor[];
+
+  // For each parent, get their children
+  return parents.map((parent) => ({
+    parent,
+    children: getChildVendors(parent.id),
+  }));
+}

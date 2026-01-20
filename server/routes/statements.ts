@@ -5,8 +5,8 @@ import { getDatabase } from "../db/index.js";
 import { UNCATEGORIZED_CATEGORY_ID } from "../db/migrations.js";
 import { parseCsv } from "../csv.js";
 import { applyCategorizationRules } from "../services/categorizationEngine.js";
-import { suggestVendorGroupings, VendorInfo } from "../services/vendorGroupingEngine.js";
-import { getRootVendors } from "../db/vendorQueries.js";
+import { suggestVendorGroupings, VendorInfo, ParentWithChildrenInfo } from "../services/vendorGroupingEngine.js";
+import { getRootVendors, getParentVendorsWithChildren } from "../db/vendorQueries.js";
 import {
   layout,
   renderTable,
@@ -194,10 +194,21 @@ router.get("/:id", (req, res) => {
       .all(...vendorIds) as VendorInfo[];
 
     // Get existing parent vendors for potential matching
-    const existingParents = getRootVendors();
+    // existingParents: root vendors that don't have children yet (could become parents)
+    // parentsWithChildren: vendors that already have children (for sibling matching)
+    const allRootVendors = getRootVendors();
+    const parentsWithChildrenData = getParentVendorsWithChildren();
+    const parentIds = new Set(parentsWithChildrenData.map((p) => p.parent.id));
+    const existingParents = allRootVendors.filter((v) => !parentIds.has(v.id));
+
+    // Convert to ParentWithChildrenInfo format
+    const parentsWithChildren: ParentWithChildrenInfo[] = parentsWithChildrenData.map((p) => ({
+      parent: { id: p.parent.id, name: p.parent.name, parent_vendor_id: p.parent.parent_vendor_id },
+      children: p.children.map((c) => ({ id: c.id, name: c.name, parent_vendor_id: c.parent_vendor_id })),
+    }));
 
     // Generate suggestions
-    const suggestions = suggestVendorGroupings(vendors, existingParents);
+    const suggestions = suggestVendorGroupings(vendors, existingParents, parentsWithChildren);
 
     // Convert to display format
     groupingSuggestions = suggestions.map((s, idx) => ({

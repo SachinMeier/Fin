@@ -7,6 +7,7 @@ import {
   createCanonicalName,
   shouldGroupVendors,
   VendorInfo,
+  ParentWithChildrenInfo,
 } from "../vendorGroupingEngine.js";
 
 // ============================================================================
@@ -412,6 +413,163 @@ describe("suggestVendorGroupings", () => {
     expect(suggestions[0].childVendorIds).toEqual([1, 2]);
   });
 
+  describe("sibling matching (2-level tree enforcement)", () => {
+    it("matches new vendors to parent when they match existing children", () => {
+      // Scenario: Parent "Starbucks" already has child "STARBUCKS #1234"
+      // New vendor "STARBUCKS #5678" should be suggested to add under "Starbucks"
+      const vendors: VendorInfo[] = [
+        { id: 3, name: "STARBUCKS #5678", parent_vendor_id: null },
+      ];
+
+      const existingParents: VendorInfo[] = [];
+
+      const parentsWithChildren: ParentWithChildrenInfo[] = [
+        {
+          parent: { id: 100, name: "Starbucks", parent_vendor_id: null },
+          children: [{ id: 1, name: "STARBUCKS #1234", parent_vendor_id: 100 }],
+        },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors, existingParents, parentsWithChildren);
+
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].parentName).toBe("Starbucks");
+      expect(suggestions[0].childVendorIds).toEqual([3]);
+    });
+
+    it("matches new vendors to parent when they match multiple existing children", () => {
+      // Parent "Amazon" has children "AMAZON*1234" and "AMAZON*5678"
+      // New vendor "AMAZON*9999" should be added under "Amazon"
+      const vendors: VendorInfo[] = [
+        { id: 5, name: "AMAZON*9999ABC", parent_vendor_id: null },
+        { id: 6, name: "AMAZON*8888XYZ", parent_vendor_id: null },
+      ];
+
+      const parentsWithChildren: ParentWithChildrenInfo[] = [
+        {
+          parent: { id: 100, name: "Amazon", parent_vendor_id: null },
+          children: [
+            { id: 1, name: "AMAZON*1234ABC", parent_vendor_id: 100 },
+            { id: 2, name: "AMAZON*5678XYZ", parent_vendor_id: 100 },
+          ],
+        },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors, [], parentsWithChildren);
+
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].parentName).toBe("Amazon");
+      expect(suggestions[0].childVendorIds).toContain(5);
+      expect(suggestions[0].childVendorIds).toContain(6);
+    });
+
+    it("prefers parent matching over creating new groups", () => {
+      // New vendors "STARBUCKS #1234" and "STARBUCKS #5678" should go under
+      // existing parent "Starbucks" rather than creating a new group
+      const vendors: VendorInfo[] = [
+        { id: 3, name: "STARBUCKS #1234", parent_vendor_id: null },
+        { id: 4, name: "STARBUCKS #5678", parent_vendor_id: null },
+      ];
+
+      const parentsWithChildren: ParentWithChildrenInfo[] = [
+        {
+          parent: { id: 100, name: "Starbucks", parent_vendor_id: null },
+          children: [{ id: 1, name: "STARBUCKS #9999", parent_vendor_id: 100 }],
+        },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors, [], parentsWithChildren);
+
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].parentName).toBe("Starbucks");
+      expect(suggestions[0].childVendorIds).toContain(3);
+      expect(suggestions[0].childVendorIds).toContain(4);
+    });
+
+    it("matches to correct parent when multiple parent trees exist", () => {
+      // Two parent trees: Starbucks and Amazon
+      // New vendor should match to correct parent based on child similarity
+      const vendors: VendorInfo[] = [
+        { id: 10, name: "STARBUCKS #NEW1", parent_vendor_id: null },
+        { id: 11, name: "AMAZON*NEW2", parent_vendor_id: null },
+      ];
+
+      const parentsWithChildren: ParentWithChildrenInfo[] = [
+        {
+          parent: { id: 100, name: "Starbucks", parent_vendor_id: null },
+          children: [{ id: 1, name: "STARBUCKS #1234", parent_vendor_id: 100 }],
+        },
+        {
+          parent: { id: 200, name: "Amazon", parent_vendor_id: null },
+          children: [{ id: 2, name: "AMAZON*1234ABC", parent_vendor_id: 200 }],
+        },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors, [], parentsWithChildren);
+
+      expect(suggestions).toHaveLength(2);
+
+      const starbucksSuggestion = suggestions.find((s) => s.parentName === "Starbucks");
+      const amazonSuggestion = suggestions.find((s) => s.parentName === "Amazon");
+
+      expect(starbucksSuggestion?.childVendorIds).toEqual([10]);
+      expect(amazonSuggestion?.childVendorIds).toEqual([11]);
+    });
+
+    it("does not create 3-level trees by adding children under existing children", () => {
+      // This test ensures we never add a new vendor as a child of an existing child
+      // If "STARBUCKS #1234" is already a child of "Starbucks", a new matching vendor
+      // should be added as a sibling (child of Starbucks), not as a child of "STARBUCKS #1234"
+      const vendors: VendorInfo[] = [
+        { id: 5, name: "STARBUCKS #5678", parent_vendor_id: null },
+      ];
+
+      const parentsWithChildren: ParentWithChildrenInfo[] = [
+        {
+          parent: { id: 100, name: "Starbucks", parent_vendor_id: null },
+          children: [{ id: 1, name: "STARBUCKS #1234", parent_vendor_id: 100 }],
+        },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors, [], parentsWithChildren);
+
+      // Should suggest adding to parent "Starbucks", not to child "STARBUCKS #1234"
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].parentName).toBe("Starbucks");
+      expect(suggestions[0].childVendorIds).toEqual([5]);
+    });
+
+    it("handles parent with children alongside root vendors without children", () => {
+      // Mix of: parent with children + root vendors without children
+      const vendors: VendorInfo[] = [
+        { id: 10, name: "STARBUCKS #NEW", parent_vendor_id: null },
+        { id: 11, name: "WALMART #NEW", parent_vendor_id: null },
+      ];
+
+      const existingParents: VendorInfo[] = [
+        // Root vendor without children - could become a parent
+        { id: 200, name: "Walmart", parent_vendor_id: null },
+      ];
+
+      const parentsWithChildren: ParentWithChildrenInfo[] = [
+        {
+          parent: { id: 100, name: "Starbucks", parent_vendor_id: null },
+          children: [{ id: 1, name: "STARBUCKS #1234", parent_vendor_id: 100 }],
+        },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors, existingParents, parentsWithChildren);
+
+      expect(suggestions).toHaveLength(2);
+
+      const starbucksSuggestion = suggestions.find((s) => s.parentName === "Starbucks");
+      const walmartSuggestion = suggestions.find((s) => s.parentName === "Walmart");
+
+      expect(starbucksSuggestion?.childVendorIds).toEqual([10]);
+      expect(walmartSuggestion?.childVendorIds).toEqual([11]);
+    });
+  });
+
   it("respects minimum name length", () => {
     const vendors: VendorInfo[] = [
       { id: 1, name: "AB", parent_vendor_id: null },
@@ -440,7 +598,7 @@ describe("suggestVendorGroupings", () => {
     expect(defaultSuggestions).toHaveLength(0);
 
     // With looser 0.7 threshold - should group
-    const looseSuggestions = suggestVendorGroupings(vendors, [], {
+    const looseSuggestions = suggestVendorGroupings(vendors, [], [], {
       similarityThreshold: 0.7,
     });
     expect(looseSuggestions).toHaveLength(1);

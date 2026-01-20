@@ -33,6 +33,14 @@ export interface VendorInfo {
 }
 
 /**
+ * A parent vendor with its direct children for matching
+ */
+export interface ParentWithChildrenInfo {
+  parent: VendorInfo;
+  children: VendorInfo[];
+}
+
+/**
  * Normalize a vendor name for comparison purposes.
  *
  * Normalization steps:
@@ -123,18 +131,21 @@ const DEFAULT_CONFIG: GroupingConfig = {
  *
  * Algorithm:
  * 1. Normalize all vendor names
- * 2. Group vendors by their normalized form
- * 3. For vendors with different normalized forms, check LCP similarity
- * 4. Create parent suggestions for groups of 2+ vendors
+ * 2. Match against existing parents first
+ * 3. Match against children of existing parents (siblings) - add to their parent
+ * 4. For remaining vendors, group by normalized form or LCP similarity
+ * 5. Enforce 2-level tree constraint: never create 3+ level hierarchies
  *
  * @param vendors - Array of vendors to analyze
- * @param existingParents - Existing parent vendors to consider merging into
+ * @param existingParents - Existing parent vendors to consider merging into (root vendors without children)
+ * @param parentsWithChildren - Existing parents that have children (for sibling matching)
  * @param config - Optional configuration
  * @returns Array of grouping suggestions
  */
 export function suggestVendorGroupings(
   vendors: VendorInfo[],
   existingParents: VendorInfo[] = [],
+  parentsWithChildren: ParentWithChildrenInfo[] = [],
   config: Partial<GroupingConfig> = {}
 ): VendorGroupingSuggestion[] {
   const cfg = { ...DEFAULT_CONFIG, ...config };
@@ -156,7 +167,7 @@ export function suggestVendorGroupings(
     }
   }
 
-  // Also normalize existing parents
+  // Normalize existing parents (root vendors without children)
   const parentNormalized = new Map<number, string>();
   for (const parent of existingParents) {
     const normalized = normalizeVendorName(parent.name);
@@ -165,35 +176,80 @@ export function suggestVendorGroupings(
     }
   }
 
+  // Build a map of child normalized names to their parent
+  // This allows matching new vendors against existing children (siblings)
+  const childToParentMap = new Map<string, { parentId: number; parentName: string; parentNorm: string }>();
+  for (const { parent, children } of parentsWithChildren) {
+    const parentNorm = normalizeVendorName(parent.name);
+    for (const child of children) {
+      const childNorm = normalizeVendorName(child.name);
+      if (childNorm.length >= cfg.minNameLength) {
+        childToParentMap.set(childNorm, { parentId: parent.id, parentName: parent.name, parentNorm });
+      }
+    }
+    // Also add the parent itself to the map (for direct parent matching)
+    if (parentNorm.length >= cfg.minNameLength) {
+      childToParentMap.set(parentNorm, { parentId: parent.id, parentName: parent.name, parentNorm });
+    }
+  }
+
   // Track which vendors have been assigned to a group
   const assignedVendors = new Set<number>();
 
-  // First pass: try to match ungrouped vendors to existing parents
+  // Helper to find or create a suggestion for a parent
+  const findOrCreateSuggestion = (
+    parentId: number,
+    parentName: string,
+    normalizedForm: string
+  ): VendorGroupingSuggestion => {
+    let suggestion = suggestions.find((s) => s.parentName === parentName);
+    if (!suggestion) {
+      suggestion = {
+        parentName,
+        childVendorIds: [],
+        childVendorNames: [],
+        normalizedForm,
+      };
+      suggestions.push(suggestion);
+    }
+    return suggestion;
+  };
+
+  // First pass: try to match ungrouped vendors to existing parents that have children
+  // This includes matching against children (siblings)
+  for (const [vendorId, normalized] of vendorNormalized) {
+    if (assignedVendors.has(vendorId)) continue;
+
+    // Check against all children and parents in parentsWithChildren
+    for (const [childNorm, parentInfo] of childToParentMap) {
+      const similarity = lcpSimilarity(normalized, childNorm);
+      if (similarity >= cfg.similarityThreshold) {
+        const suggestion = findOrCreateSuggestion(
+          parentInfo.parentId,
+          parentInfo.parentName,
+          parentInfo.parentNorm
+        );
+        const vendor = ungroupedVendors.find((v) => v.id === vendorId);
+        if (vendor) {
+          suggestion.childVendorIds.push(vendorId);
+          suggestion.childVendorNames.push(vendor.name);
+          assignedVendors.add(vendorId);
+        }
+        break;
+      }
+    }
+  }
+
+  // Second pass: try to match remaining ungrouped vendors to root parents without children
   for (const [vendorId, normalized] of vendorNormalized) {
     if (assignedVendors.has(vendorId)) continue;
 
     for (const [parentId, parentNorm] of parentNormalized) {
       const similarity = lcpSimilarity(normalized, parentNorm);
       if (similarity >= cfg.similarityThreshold) {
-        // Find or create suggestion for this parent
-        let suggestion = suggestions.find((s) =>
-          existingParents.some((p) => p.id === parentId && p.name === s.parentName)
-        );
-
-        if (!suggestion) {
-          const parent = existingParents.find((p) => p.id === parentId);
-          if (parent) {
-            suggestion = {
-              parentName: parent.name,
-              childVendorIds: [],
-              childVendorNames: [],
-              normalizedForm: parentNorm,
-            };
-            suggestions.push(suggestion);
-          }
-        }
-
-        if (suggestion) {
+        const parent = existingParents.find((p) => p.id === parentId);
+        if (parent) {
+          const suggestion = findOrCreateSuggestion(parentId, parent.name, parentNorm);
           const vendor = ungroupedVendors.find((v) => v.id === vendorId);
           if (vendor) {
             suggestion.childVendorIds.push(vendorId);
@@ -286,8 +342,26 @@ export function suggestVendorGroupings(
     }
   }
 
-  // Filter out suggestions with only one child
-  return suggestions.filter((s) => s.childVendorIds.length >= 2);
+  // Build a set of existing parent names (both from parentsWithChildren and existingParents)
+  const existingParentNames = new Set<string>();
+  for (const { parent } of parentsWithChildren) {
+    existingParentNames.add(parent.name);
+  }
+  for (const parent of existingParents) {
+    existingParentNames.add(parent.name);
+  }
+
+  // Filter out suggestions:
+  // - For existing parents: allow even a single new child (adding to existing tree)
+  // - For new groups: require at least 2 vendors (creating new tree)
+  return suggestions.filter((s) => {
+    if (existingParentNames.has(s.parentName)) {
+      // Adding to existing parent - allow even one child
+      return s.childVendorIds.length >= 1;
+    }
+    // Creating new group - require at least 2
+    return s.childVendorIds.length >= 2;
+  });
 }
 
 /**
