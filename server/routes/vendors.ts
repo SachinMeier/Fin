@@ -7,6 +7,7 @@ import {
   suggestVendorGroupings,
   type VendorInfo,
 } from "../services/vendorGroupingEngine.js";
+import { applyCategorizationRules } from "../services/categorizationEngine.js";
 import {
   layout,
   renderTable,
@@ -391,11 +392,17 @@ router.post("/group", (req, res) => {
       }
     } else {
       // Create a new parent vendor
+      // If no category specified, apply categorization rules to the parent name
+      let newParentCategoryId = categoryId;
+      if (categoryId === UNCATEGORIZED_CATEGORY_ID) {
+        const ruleResult = applyCategorizationRules(db, parentName);
+        newParentCategoryId = ruleResult.categoryId ?? UNCATEGORIZED_CATEGORY_ID;
+      }
       const parentResult = db
         .prepare("INSERT INTO vendors (name, category_id) VALUES (?, ?)")
-        .run(parentName, categoryId);
+        .run(parentName, newParentCategoryId);
       parentId = Number(parentResult.lastInsertRowid);
-      effectiveCategoryId = categoryId;
+      effectiveCategoryId = newParentCategoryId;
     }
 
     // Update child vendors to point to the parent and inherit the parent's category
@@ -476,11 +483,14 @@ router.post("/apply-groupings", (req, res) => {
             }
           } else {
             // Create a new parent vendor with the canonical name
+            // Apply categorization rules to determine initial category
+            const ruleResult = applyCategorizationRules(db, parentName);
+            const newCategoryId = ruleResult.categoryId ?? UNCATEGORIZED_CATEGORY_ID;
             const parentResult = db
               .prepare("INSERT INTO vendors (name, category_id) VALUES (?, ?)")
-              .run(parentName, UNCATEGORIZED_CATEGORY_ID);
+              .run(parentName, newCategoryId);
             parentId = Number(parentResult.lastInsertRowid);
-            parentCategoryId = UNCATEGORIZED_CATEGORY_ID;
+            parentCategoryId = newCategoryId;
           }
 
           // Update child vendors to point to the parent and inherit the parent's category
