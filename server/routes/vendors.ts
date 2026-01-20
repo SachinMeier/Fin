@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { getDatabase } from "../db/index.js";
 import { getCategoryTreeFlat, CategoryWithDepth } from "../db/categoryQueries.js";
-import { getVendorTreeFlat, wouldCreateVendorCycle, getRootVendors, updateVendorCategoryWithDescendants, VendorWithDepth } from "../db/vendorQueries.js";
+import { getVendorTreeFlat, wouldCreateVendorCycle, getRootVendors, updateVendorCategoryWithDescendants, getVendorAncestors, VendorWithDepth, Vendor as VendorFromQueries } from "../db/vendorQueries.js";
 import { UNCATEGORIZED_CATEGORY_ID } from "../db/migrations.js";
 import {
   layout,
@@ -180,6 +180,9 @@ router.get("/:id", (req, res) => {
 
   const allCategories = getCategoryTreeFlat();
 
+  // Get vendor ancestors for breadcrumbs
+  const breadcrumbs = getVendorAncestors(vendorId);
+
   // Get potential parent vendors (root vendors only, excluding self)
   const potentialParents = getRootVendors().filter((v) => v.id !== vendorId);
 
@@ -232,7 +235,8 @@ router.get("/:id", (req, res) => {
       childVendors,
       isParentWithNoOwnTransactions,
       showChildTransactions,
-      childVendorTransactions
+      childVendorTransactions,
+      breadcrumbs
     )
   );
 });
@@ -400,6 +404,24 @@ router.post("/group", (req, res) => {
 // ============================================================================
 // Render Functions
 // ============================================================================
+
+function renderVendorBreadcrumbs(vendors: VendorFromQueries[]): string {
+  const links = vendors.map((v, i) => {
+    const isLast = i === vendors.length - 1;
+    if (isLast) {
+      return `<span class="text-gray-900 dark:text-gray-100">${escapeHtml(v.name)}</span>`;
+    }
+    return `<a href="/vendors/${v.id}" class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">${escapeHtml(v.name)}</a>`;
+  });
+
+  return `
+    <nav class="flex items-center gap-2 text-sm mb-4">
+      <a href="/vendors" class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">Vendors</a>
+      <span class="text-gray-400">/</span>
+      ${links.join('<span class="text-gray-400">/</span>')}
+    </nav>
+  `;
+}
 
 function renderVendorsListPage(
   vendors: VendorWithStats[],
@@ -807,7 +829,8 @@ function renderVendorDetailPage(
   childVendors: Array<{ id: number; name: string }>,
   isParentWithNoOwnTransactions: boolean,
   showChildTransactions: boolean,
-  childVendorTransactions: ChildVendorTransactions[]
+  childVendorTransactions: ChildVendorTransactions[],
+  breadcrumbs: VendorFromQueries[]
 ): string {
   const inputClasses =
     "w-full px-4 py-2 text-base border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-200 dark:focus:ring-gray-700 focus:border-gray-300 dark:focus:border-gray-600 transition-colors";
@@ -1073,21 +1096,16 @@ function renderVendorDetailPage(
       })
     : renderUncategorizedPill();
 
-  const parentInfo = vendor.parent_vendor_name
-    ? `<span>·</span><span>Parent: <a href="/vendors/${vendor.parent_vendor_id}" class="hover:underline">${escapeHtml(vendor.parent_vendor_name)}</a></span>`
-    : "";
+  const breadcrumbHtml = renderVendorBreadcrumbs(breadcrumbs);
 
   const content = `
-    <div class="flex items-start justify-between mb-6">
-      <div>
-        <h1 class="text-2xl font-semibold mb-2">${escapeHtml(vendor.name)}</h1>
-        <div class="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
-          ${vendor.address ? `<span>${escapeHtml(vendor.address)}</span><span>·</span>` : ""}
-          ${categoryBadge}
-          ${parentInfo}
-        </div>
+    ${breadcrumbHtml}
+    <div class="mb-6">
+      <h1 class="text-2xl font-semibold mb-2">${escapeHtml(vendor.name)}</h1>
+      <div class="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
+        ${vendor.address ? `<span>${escapeHtml(vendor.address)}</span><span>·</span>` : ""}
+        ${categoryBadge}
       </div>
-      ${renderLinkButton({ label: "Back to Vendors", href: "/vendors" })}
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
