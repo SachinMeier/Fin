@@ -39,6 +39,7 @@ interface VendorWithStats extends Vendor {
   category_color: string | null;
   transaction_count: number;
   total_amount: number;
+  children_total_amount: number;
   depth: number;
   parent_vendor_name: string | null;
 }
@@ -91,6 +92,7 @@ router.get("/", (req, res) => {
   }
 
   // Use recursive CTE to get hierarchical vendor list with depth
+  // Also calculate aggregated children amounts for parent vendors
   const vendors = db
     .prepare(
       `
@@ -118,6 +120,16 @@ router.get("/", (req, res) => {
         vt.sort_path || '/' || v.name
       FROM vendors v
       INNER JOIN vendor_tree vt ON v.parent_vendor_id = vt.id
+    ),
+    -- Calculate children totals for each parent
+    children_totals AS (
+      SELECT
+        parent_vendor_id,
+        COALESCE(SUM(t.amount), 0) AS children_total_amount
+      FROM vendors v
+      LEFT JOIN transactions t ON t.vendor_id = v.id
+      WHERE v.parent_vendor_id IS NOT NULL
+      GROUP BY v.parent_vendor_id
     )
     SELECT
       vt.id, vt.name, vt.address, vt.category_id, vt.parent_vendor_id, vt.depth,
@@ -125,11 +137,13 @@ router.get("/", (req, res) => {
       c.color AS category_color,
       pv.name AS parent_vendor_name,
       COUNT(t.id) AS transaction_count,
-      COALESCE(SUM(t.amount), 0) AS total_amount
+      COALESCE(SUM(t.amount), 0) AS total_amount,
+      COALESCE(ct.children_total_amount, 0) AS children_total_amount
     FROM vendor_tree vt
     LEFT JOIN categories c ON vt.category_id = c.id
     LEFT JOIN vendors pv ON vt.parent_vendor_id = pv.id
     LEFT JOIN transactions t ON t.vendor_id = vt.id
+    LEFT JOIN children_totals ct ON ct.parent_vendor_id = vt.id
     ${whereClause.replace("v.", "vt.")}
     GROUP BY vt.id
     ORDER BY vt.sort_path
@@ -596,6 +610,8 @@ function renderVendorsListPage(
         const prefix = v.depth > 0 ? "\u2514 " : "";
         // Only allow selecting root vendors that don't have children
         const hasChildren = vendors.some((ov) => ov.parent_vendor_id === v.id);
+        const isParent = v.parent_vendor_id === null && hasChildren;
+        const isChild = v.depth > 0;
         const canSelect = v.parent_vendor_id === null && !hasChildren;
 
         const checkbox = canSelect
@@ -623,17 +639,40 @@ function renderVendorsListPage(
           ? `data-drop-target="true" data-parent-id="${v.id}" data-parent-name="${escapeHtml(v.name).replace(/"/g, "&quot;")}" data-is-orphan="${isOrphan}"`
           : "";
 
+        // Collapse/expand toggle for parent vendors
+        const toggleButton = isParent
+          ? `<button type="button" class="parent-toggle mr-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-transform" data-parent-id="${v.id}" aria-expanded="false">
+               <svg class="w-4 h-4 transform -rotate-90 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+               </svg>
+             </button>`
+          : "";
+
+        // For parents: show children total when collapsed, nothing when expanded
+        // For non-parents: show their own amount
+        const amountCell = isParent
+          ? `<span class="parent-amount-collapsed font-mono">${formatCurrency(v.children_total_amount + v.total_amount)}</span><span class="parent-amount-expanded hidden font-mono"></span>`
+          : `<span class="font-mono">${formatCurrency(v.total_amount)}</span>`;
+
+        // Child rows: hidden by default, include parent reference
+        const childAttrs = isChild
+          ? `data-child-of="${v.parent_vendor_id}" style="display: none;"`
+          : "";
+        const parentAttr = isParent ? `data-is-parent="${v.id}"` : "";
+
         return `
-          <tr class="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 vendor-row" ${dragAttrs} ${dropAttrs}>
+          <tr class="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 vendor-row" ${dragAttrs} ${dropAttrs} ${childAttrs} ${parentAttr}>
             <td class="px-3 py-3 text-sm">
               ${checkbox}
             </td>
             <td class="px-3 py-3 text-sm">
-              <a href="/vendors/${v.id}" class="hover:underline">${indent}${prefix}${escapeHtml(v.name)}</a>
+              <span class="inline-flex items-center">
+                ${toggleButton}<a href="/vendors/${v.id}" class="hover:underline">${indent}${prefix}${escapeHtml(v.name)}</a>
+              </span>
             </td>
             <td class="px-3 py-3 text-sm">${categoryCell}</td>
             <td class="px-3 py-3 text-sm text-right">${v.transaction_count}</td>
-            <td class="px-3 py-3 text-sm text-right font-mono">${formatCurrency(v.total_amount)}</td>
+            <td class="px-3 py-3 text-sm text-right">${amountCell}</td>
           </tr>
         `;
       }).join("");
@@ -915,6 +954,45 @@ function renderVendorsListPage(
       function hideCreateGroupModal() {
         document.getElementById('createGroupModal').classList.add('hidden');
       }
+
+      // ===============================
+      // Parent vendor collapse/expand functionality
+      // ===============================
+      (function() {
+        var toggleButtons = document.querySelectorAll('.parent-toggle');
+
+        toggleButtons.forEach(function(btn) {
+          btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            var parentId = btn.dataset.parentId;
+            var isExpanded = btn.getAttribute('aria-expanded') === 'true';
+            var childRows = document.querySelectorAll('tr[data-child-of="' + parentId + '"]');
+            var parentRow = document.querySelector('tr[data-is-parent="' + parentId + '"]');
+            var collapsedAmount = parentRow ? parentRow.querySelector('.parent-amount-collapsed') : null;
+            var expandedAmount = parentRow ? parentRow.querySelector('.parent-amount-expanded') : null;
+
+            if (isExpanded) {
+              // Collapse: hide children, show aggregated amount
+              btn.setAttribute('aria-expanded', 'false');
+              btn.querySelector('svg').classList.add('-rotate-90');
+              childRows.forEach(function(row) {
+                row.style.display = 'none';
+              });
+              if (collapsedAmount) collapsedAmount.classList.remove('hidden');
+              if (expandedAmount) expandedAmount.classList.add('hidden');
+            } else {
+              // Expand: show children, hide amount
+              btn.setAttribute('aria-expanded', 'true');
+              btn.querySelector('svg').classList.remove('-rotate-90');
+              childRows.forEach(function(row) {
+                row.style.display = '';
+              });
+              if (collapsedAmount) collapsedAmount.classList.add('hidden');
+              if (expandedAmount) expandedAmount.classList.remove('hidden');
+            }
+          });
+        });
+      })();
     </script>
   `;
 
