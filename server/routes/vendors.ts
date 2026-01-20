@@ -314,8 +314,11 @@ router.post("/:id/reparent", (req, res) => {
     }
   }
 
-  // When removing from a parent, redirect to the parent (unless it was deleted)
-  if (oldParentId !== null && parentVendorId === null && !oldParentDeleted) {
+  // When adding to a parent, redirect to the new parent
+  // When removing from a parent, redirect to the old parent (unless it was deleted)
+  if (parentVendorId !== null) {
+    res.redirect(`/vendors/${parentVendorId}`);
+  } else if (oldParentId !== null && !oldParentDeleted) {
     res.redirect(`/vendors/${oldParentId}`);
   } else {
     res.redirect(`/vendors/${vendorId}`);
