@@ -570,7 +570,12 @@ function renderCategoriesListPage(
 
   const content = `
     <div class="flex items-center justify-between mb-6">
-      <h1 class="text-2xl font-semibold">Categories</h1>
+      <div>
+        <h1 class="text-2xl font-semibold">Categories</h1>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+          Categories allow you to do breakdowns and drilldowns on your earning/spending patterns. Import the defaults or create your own!
+        </p>
+      </div>
       <div class="flex gap-2">
         <form method="POST" action="/categories/import-defaults" class="inline">
           ${renderButton({ label: "Import Defaults", variant: "normal", type: "submit" })}
