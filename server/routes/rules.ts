@@ -1,7 +1,6 @@
 import { Router } from "express";
 import { getDatabase } from "../db/index.js";
 import { getCategoryTreeFlat } from "../db/categoryQueries.js";
-import { getRootVendors } from "../db/vendorQueries.js";
 import {
   getOrderedRules,
   getNextRuleOrder,
@@ -11,10 +10,6 @@ import {
   applyCategorizationRules,
   type RuleType,
 } from "../services/categorizationEngine.js";
-import {
-  suggestVendorGroupings,
-  type VendorInfo,
-} from "../services/vendorGroupingEngine.js";
 import { UNCATEGORIZED_CATEGORY_ID, DEFAULT_PATTERN_RULES } from "../db/migrations.js";
 import {
   layout,
@@ -26,9 +21,7 @@ import {
   renderCategorySelector,
   renderActionRow,
   renderCategoryPill,
-  renderVendorGroupingReview,
   escapeHtml,
-  type GroupingSuggestionDisplay,
 } from "../templates/index.js";
 
 const router = Router();
@@ -69,9 +62,8 @@ router.get("/", (req, res) => {
   const reprocessed = typeof req.query.reprocessed === "string" ? parseInt(req.query.reprocessed, 10) : null;
   const total = typeof req.query.total === "string" ? parseInt(req.query.total, 10) : null;
   const imported = typeof req.query.imported === "string" ? parseInt(req.query.imported, 10) : null;
-  const grouped = typeof req.query.grouped === "string" ? parseInt(req.query.grouped, 10) : null;
 
-  res.send(renderRulesListPage(rules, { reprocessed, total, imported, grouped }));
+  res.send(renderRulesListPage(rules, { reprocessed, total, imported }));
 });
 
 // GET /rules/new - Show create rule form
@@ -307,95 +299,6 @@ router.get("/test", (req, res) => {
   res.json({ matches, pattern, vendorName });
 });
 
-// POST /rules/suggest-vendor-groupings - Analyze all vendors and show grouping suggestions
-router.post("/suggest-vendor-groupings", (_req, res) => {
-  const db = getDatabase();
-
-  // Get all ungrouped vendors (no parent)
-  const vendors = db
-    .prepare("SELECT id, name, parent_vendor_id FROM vendors WHERE parent_vendor_id IS NULL")
-    .all() as VendorInfo[];
-
-  // Get existing parent vendors for potential matching
-  const existingParents = getRootVendors();
-
-  // Generate suggestions
-  const suggestions = suggestVendorGroupings(vendors, existingParents);
-
-  // Convert to display format
-  const groupingSuggestions: GroupingSuggestionDisplay[] = suggestions.map((s, idx) => ({
-    suggestionId: `group_${idx}`,
-    parentName: s.parentName,
-    childVendorIds: s.childVendorIds,
-    childVendorNames: s.childVendorNames,
-    normalizedForm: s.normalizedForm,
-  }));
-
-  res.send(renderVendorGroupingsPage(groupingSuggestions));
-});
-
-// POST /rules/apply-vendor-groupings - Apply selected vendor groupings
-router.post("/apply-vendor-groupings", (req, res) => {
-  const db = getDatabase();
-
-  let appliedCount = 0;
-
-  db.transaction(() => {
-    // Process each potential grouping
-    let groupIndex = 0;
-    while (req.body[`group_${groupIndex}_vendor_ids`] !== undefined) {
-      const isAccepted = req.body[`accept_group_${groupIndex}`] === "1";
-
-      if (isAccepted) {
-        const vendorIdsStr = req.body[`group_${groupIndex}_vendor_ids`] as string;
-        const parentName = req.body[`group_${groupIndex}_parent_name`] as string;
-        const vendorIds = vendorIdsStr.split(",").map(Number);
-
-        if (vendorIds.length >= 2 && parentName) {
-          // Check if a vendor with this name already exists
-          const existingVendor = db
-            .prepare("SELECT id, category_id FROM vendors WHERE name = ?")
-            .get(parentName) as { id: number; category_id: number } | undefined;
-
-          let parentId: number;
-          let parentCategoryId: number;
-
-          if (existingVendor) {
-            // Use existing vendor as parent (if it's not one of the children)
-            if (!vendorIds.includes(existingVendor.id)) {
-              parentId = existingVendor.id;
-              parentCategoryId = existingVendor.category_id;
-            } else {
-              // Skip this group - parent name matches a child
-              groupIndex++;
-              continue;
-            }
-          } else {
-            // Create a new parent vendor with the canonical name
-            const parentResult = db
-              .prepare("INSERT INTO vendors (name, category_id) VALUES (?, ?)")
-              .run(parentName, UNCATEGORIZED_CATEGORY_ID);
-            parentId = Number(parentResult.lastInsertRowid);
-            parentCategoryId = UNCATEGORIZED_CATEGORY_ID;
-          }
-
-          // Update child vendors to point to the parent and inherit the parent's category
-          const placeholders = vendorIds.map(() => "?").join(",");
-          db.prepare(
-            `UPDATE vendors SET parent_vendor_id = ?, category_id = ? WHERE id IN (${placeholders})`
-          ).run(parentId, parentCategoryId, ...vendorIds);
-
-          appliedCount++;
-        }
-      }
-
-      groupIndex++;
-    }
-  })();
-
-  res.redirect("/vendors");
-});
-
 // ============================================================================
 // Template Functions
 // ============================================================================
@@ -404,7 +307,6 @@ interface RulesListOptions {
   reprocessed: number | null;
   total: number | null;
   imported: number | null;
-  grouped: number | null;
 }
 
 function renderRulesListPage(rules: DbRule[], options: RulesListOptions): string {
@@ -453,16 +355,7 @@ function renderRulesListPage(rules: DbRule[], options: RulesListOptions): string
   `
       : "";
 
-  const groupedMessage =
-    options.grouped !== null
-      ? `
-    <div class="mb-6 px-4 py-3 text-sm rounded-lg bg-green-50 text-green-700 border border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800">
-      Applied ${options.grouped} vendor grouping${options.grouped === 1 ? "" : "s"}.
-    </div>
-  `
-      : "";
-
-  const successMessage = reprocessMessage + importMessage + groupedMessage;
+  const successMessage = reprocessMessage + importMessage;
 
   const content = `
     <div class="mb-6">
@@ -494,20 +387,12 @@ function renderRulesListPage(rules: DbRule[], options: RulesListOptions): string
 
     <div class="mt-8 pt-6 border-t border-gray-200 dark:border-gray-800">
       <h2 class="text-lg font-medium text-gray-700 dark:text-gray-300 mb-3">Vendor Tools</h2>
-      <div class="flex flex-wrap gap-4">
-        <form action="/rules/reprocess-uncategorized" method="POST">
-          ${renderButton({ label: "Reprocess Uncategorized Vendors", type: "submit" })}
-          <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
-            Run all uncategorized vendors through the categorization rules.
-          </p>
-        </form>
-        <form action="/rules/suggest-vendor-groupings" method="POST">
-          ${renderButton({ label: "Suggest Vendor Groupings", type: "submit" })}
-          <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
-            Find similar vendors and suggest groupings under parent vendors.
-          </p>
-        </form>
-      </div>
+      <form action="/rules/reprocess-uncategorized" method="POST">
+        ${renderButton({ label: "Reprocess Uncategorized Vendors", type: "submit" })}
+        <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
+          Run all uncategorized vendors through the categorization rules.
+        </p>
+      </form>
     </div>
   `;
 
@@ -746,44 +631,6 @@ function renderRuleForm({ categories, error, isNew, rule }: RuleFormOptions): st
   `;
 
   return layout({ title, content, activePath: "/rules" });
-}
-
-function renderVendorGroupingsPage(suggestions: GroupingSuggestionDisplay[]): string {
-  const noSuggestionsHtml = `
-    <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-sm">
-      <div class="px-12 py-8 text-center text-gray-400 dark:text-gray-500">
-        No vendor grouping suggestions found. All vendors appear to be unique or already grouped.
-      </div>
-    </div>
-  `;
-
-  const suggestionsHtml =
-    suggestions.length === 0
-      ? noSuggestionsHtml
-      : renderVendorGroupingReview({
-          suggestions,
-          formAction: "/rules/apply-vendor-groupings",
-          showNormalizedForm: true,
-        });
-
-  const content = `
-    <div class="mb-6">
-      <h1 class="text-2xl font-semibold">Vendor Grouping Suggestions</h1>
-    </div>
-
-    <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
-      This page identifies vendors that may be from the same merchant based on name similarity.
-      Applying a grouping creates a parent vendor with a cleaned name (no numbers or special characters).
-    </p>
-
-    ${suggestionsHtml}
-
-    <div class="mt-6">
-      ${renderLinkButton({ label: "\u2190 Back to Rules", href: "/rules" })}
-    </div>
-  `;
-
-  return layout({ title: "Vendor Groupings", content, activePath: "/rules" });
 }
 
 export default router;

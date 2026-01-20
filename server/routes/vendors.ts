@@ -4,6 +4,10 @@ import { getCategoryTreeFlat, CategoryWithDepth } from "../db/categoryQueries.js
 import { getVendorTreeFlat, wouldCreateVendorCycle, getRootVendors, updateVendorCategoryWithDescendants, getVendorAncestors, VendorWithDepth, Vendor as VendorFromQueries } from "../db/vendorQueries.js";
 import { UNCATEGORIZED_CATEGORY_ID } from "../db/migrations.js";
 import {
+  suggestVendorGroupings,
+  type VendorInfo,
+} from "../services/vendorGroupingEngine.js";
+import {
   layout,
   renderTable,
   formatCurrency,
@@ -13,6 +17,8 @@ import {
   renderCategoryPill,
   renderUncategorizedPill,
   renderInlineCategorySelect,
+  renderVendorGroupingReview,
+  type GroupingSuggestionDisplay,
 } from "../templates/index.js";
 import type { CategoryOption } from "../templates/index.js";
 
@@ -58,6 +64,7 @@ interface ChildVendorTransactions {
 router.get("/", (req, res) => {
   const db = getDatabase();
   const categoryFilter = typeof req.query.category === "string" ? req.query.category : null;
+  const grouped = typeof req.query.grouped === "string" ? parseInt(req.query.grouped, 10) : null;
 
   // Get all categories for the filter dropdown
   const categories = db
@@ -129,7 +136,7 @@ router.get("/", (req, res) => {
     )
     .all(...params) as VendorWithStats[];
 
-  res.send(renderVendorsListPage(vendors, categories, categoryFilter, categoryTree));
+  res.send(renderVendorsListPage(vendors, categories, categoryFilter, categoryTree, grouped));
 });
 
 // GET /vendors/:id - View vendor details
@@ -401,6 +408,95 @@ router.post("/group", (req, res) => {
   res.redirect("/vendors");
 });
 
+// POST /vendors/suggest-groupings - Analyze all vendors and show grouping suggestions
+router.post("/suggest-groupings", (_req, res) => {
+  const db = getDatabase();
+
+  // Get all ungrouped vendors (no parent)
+  const vendors = db
+    .prepare("SELECT id, name, parent_vendor_id FROM vendors WHERE parent_vendor_id IS NULL")
+    .all() as VendorInfo[];
+
+  // Get existing parent vendors for potential matching
+  const existingParents = getRootVendors();
+
+  // Generate suggestions
+  const suggestions = suggestVendorGroupings(vendors, existingParents);
+
+  // Convert to display format
+  const groupingSuggestions: GroupingSuggestionDisplay[] = suggestions.map((s, idx) => ({
+    suggestionId: `group_${idx}`,
+    parentName: s.parentName,
+    childVendorIds: s.childVendorIds,
+    childVendorNames: s.childVendorNames,
+    normalizedForm: s.normalizedForm,
+  }));
+
+  res.send(renderVendorGroupingsPage(groupingSuggestions));
+});
+
+// POST /vendors/apply-groupings - Apply selected vendor groupings
+router.post("/apply-groupings", (req, res) => {
+  const db = getDatabase();
+
+  let appliedCount = 0;
+
+  db.transaction(() => {
+    // Process each potential grouping
+    let groupIndex = 0;
+    while (req.body[`group_${groupIndex}_vendor_ids`] !== undefined) {
+      const isAccepted = req.body[`accept_group_${groupIndex}`] === "1";
+
+      if (isAccepted) {
+        const vendorIdsStr = req.body[`group_${groupIndex}_vendor_ids`] as string;
+        const parentName = req.body[`group_${groupIndex}_parent_name`] as string;
+        const vendorIds = vendorIdsStr.split(",").map(Number);
+
+        if (vendorIds.length >= 2 && parentName) {
+          // Check if a vendor with this name already exists
+          const existingVendor = db
+            .prepare("SELECT id, category_id FROM vendors WHERE name = ?")
+            .get(parentName) as { id: number; category_id: number } | undefined;
+
+          let parentId: number;
+          let parentCategoryId: number;
+
+          if (existingVendor) {
+            // Use existing vendor as parent (if it's not one of the children)
+            if (!vendorIds.includes(existingVendor.id)) {
+              parentId = existingVendor.id;
+              parentCategoryId = existingVendor.category_id;
+            } else {
+              // Skip this group - parent name matches a child
+              groupIndex++;
+              continue;
+            }
+          } else {
+            // Create a new parent vendor with the canonical name
+            const parentResult = db
+              .prepare("INSERT INTO vendors (name, category_id) VALUES (?, ?)")
+              .run(parentName, UNCATEGORIZED_CATEGORY_ID);
+            parentId = Number(parentResult.lastInsertRowid);
+            parentCategoryId = UNCATEGORIZED_CATEGORY_ID;
+          }
+
+          // Update child vendors to point to the parent and inherit the parent's category
+          const placeholders = vendorIds.map(() => "?").join(",");
+          db.prepare(
+            `UPDATE vendors SET parent_vendor_id = ?, category_id = ? WHERE id IN (${placeholders})`
+          ).run(parentId, parentCategoryId, ...vendorIds);
+
+          appliedCount++;
+        }
+      }
+
+      groupIndex++;
+    }
+  })();
+
+  res.redirect(`/vendors?grouped=${appliedCount}`);
+});
+
 // ============================================================================
 // Render Functions
 // ============================================================================
@@ -427,7 +523,8 @@ function renderVendorsListPage(
   vendors: VendorWithStats[],
   categories: Category[],
   currentFilter: string | null,
-  categoryTree: CategoryWithDepth[]
+  categoryTree: CategoryWithDepth[],
+  grouped: number | null
 ): string {
   // Convert category tree to CategoryOption format for inline select
   const inlineSelectCategories: CategoryOption[] = categoryTree.map((c) => ({
@@ -437,6 +534,16 @@ function renderVendorsListPage(
   }));
   const inputClasses =
     "px-4 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-200 dark:focus:ring-gray-700 focus:border-gray-300 dark:focus:border-gray-600 transition-colors";
+
+  // Success message for applied groupings
+  const groupedMessage =
+    grouped !== null
+      ? `
+    <div class="mb-6 px-4 py-3 text-sm rounded-lg bg-green-50 text-green-700 border border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800">
+      Applied ${grouped} vendor grouping${grouped === 1 ? "" : "s"}.
+    </div>
+  `
+      : "";
 
   const categoryOptions = [
     `<option value=""${currentFilter === null || currentFilter === "" ? " selected" : ""}>All Categories</option>`,
@@ -796,12 +903,17 @@ function renderVendorsListPage(
   `;
 
   const content = `
-    <h1 class="text-2xl font-semibold mb-2">Vendors</h1>
+    <div class="flex items-center justify-between mb-2">
+      <h1 class="text-2xl font-semibold">Vendors</h1>
+      <form action="/vendors/suggest-groupings" method="POST">
+        ${renderButton({ label: "Suggest Vendor Groupings", type: "submit" })}
+      </form>
+    </div>
     <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
       A list of all the vendors you've transacted with across all statements.
       Select multiple root vendors (without children) to group them under a new parent, or drag a vendor onto another to add it as a child.
-      You can also use <a href="/rules" class="underline hover:text-gray-700 dark:hover:text-gray-300">Rules</a> for automatic grouping suggestions.
     </p>
+    ${groupedMessage}
     ${filterHtml}
     ${tableHtml}
     ${groupFormHtml}
@@ -1129,6 +1241,44 @@ function renderVendorDetailPage(
     content,
     activePath: "/vendors",
   });
+}
+
+function renderVendorGroupingsPage(suggestions: GroupingSuggestionDisplay[]): string {
+  const noSuggestionsHtml = `
+    <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-sm">
+      <div class="px-12 py-8 text-center text-gray-400 dark:text-gray-500">
+        No vendor grouping suggestions found. All vendors appear to be unique or already grouped.
+      </div>
+    </div>
+  `;
+
+  const suggestionsHtml =
+    suggestions.length === 0
+      ? noSuggestionsHtml
+      : renderVendorGroupingReview({
+          suggestions,
+          formAction: "/vendors/apply-groupings",
+          showNormalizedForm: true,
+        });
+
+  const content = `
+    <div class="mb-6">
+      <h1 class="text-2xl font-semibold">Vendor Grouping Suggestions</h1>
+    </div>
+
+    <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
+      This page identifies vendors that may be from the same merchant based on name similarity.
+      Applying a grouping creates a parent vendor with a cleaned name (no numbers or special characters).
+    </p>
+
+    ${suggestionsHtml}
+
+    <div class="mt-6">
+      ${renderLinkButton({ label: "\u2190 Back to Vendors", href: "/vendors" })}
+    </div>
+  `;
+
+  return layout({ title: "Vendor Groupings", content, activePath: "/vendors" });
 }
 
 export default router;
