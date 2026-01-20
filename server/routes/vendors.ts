@@ -438,11 +438,13 @@ function renderVendorsListPage(
         const canBeDragged = v.parent_vendor_id === null && !hasChildren;
         // Droppable: root vendors (with or without children) can accept new children
         const canAcceptChild = v.parent_vendor_id === null;
+        // Is this vendor an orphan (root with no children) or a parent (root with children)?
+        const isOrphan = v.parent_vendor_id === null && !hasChildren;
         const dragAttrs = canBeDragged
           ? `draggable="true" data-vendor-id="${v.id}" data-vendor-name="${escapeHtml(v.name).replace(/"/g, "&quot;")}"`
           : "";
         const dropAttrs = canAcceptChild
-          ? `data-drop-target="true" data-parent-id="${v.id}" data-parent-name="${escapeHtml(v.name).replace(/"/g, "&quot;")}"`
+          ? `data-drop-target="true" data-parent-id="${v.id}" data-parent-name="${escapeHtml(v.name).replace(/"/g, "&quot;")}" data-is-orphan="${isOrphan}"`
           : "";
 
         return `
@@ -529,6 +531,46 @@ function renderVendorsListPage(
             <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
               Add as Child
             </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Modal for creating a new group when dragging orphan onto orphan
+  const createGroupModalHtml = `
+    <div id="createGroupModal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+      <div class="flex items-center justify-center min-h-screen px-4">
+        <div class="fixed inset-0 bg-black/30 dark:bg-black/50" onclick="hideCreateGroupModal()"></div>
+        <div class="relative bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 max-w-md w-full shadow-lg">
+          <h3 class="text-lg font-medium mb-2">Create Vendor Group</h3>
+          <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+            Group <span id="createGroupVendor1" class="font-medium text-gray-900 dark:text-gray-100"></span> and <span id="createGroupVendor2" class="font-medium text-gray-900 dark:text-gray-100"></span> under a new parent vendor.
+          </p>
+          <form id="createGroupForm" method="POST" action="/vendors/group">
+            <input type="hidden" name="vendor_ids" id="createGroupVendorId1" value="">
+            <input type="hidden" name="vendor_ids" id="createGroupVendorId2" value="">
+            <div class="space-y-4 mb-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="createGroupParentName">Parent Vendor Name</label>
+                <input type="text" id="createGroupParentName" name="parent_name" required placeholder="e.g., Amazon" class="${inputClasses}" />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="createGroupCategory">Category (optional)</label>
+                <select id="createGroupCategory" name="category_id" class="${inputClasses}">
+                  <option value="">Uncategorized</option>
+                  ${groupCategoryOptions}
+                </select>
+              </div>
+            </div>
+            <div class="flex gap-2 justify-end">
+              <button type="button" onclick="hideCreateGroupModal()" class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors">
+                Cancel
+              </button>
+              <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
+                Create Group
+              </button>
+            </div>
           </form>
         </div>
       </div>
@@ -657,8 +699,13 @@ function renderVendorsListPage(
               return;
             }
 
-            // Show confirmation modal
-            showAddChildModal(draggedVendorId, draggedVendorName, target.dataset.parentId, target.dataset.parentName);
+            // Check if target is an orphan (no children) - if so, show create group modal
+            // Otherwise, show add child modal (adding to existing parent)
+            if (target.dataset.isOrphan === 'true') {
+              showCreateGroupModal(draggedVendorId, draggedVendorName, target.dataset.parentId, target.dataset.parentName);
+            } else {
+              showAddChildModal(draggedVendorId, draggedVendorName, target.dataset.parentId, target.dataset.parentName);
+            }
           });
         });
       })();
@@ -675,6 +722,23 @@ function renderVendorsListPage(
       function hideAddChildModal() {
         document.getElementById('addChildModal').classList.add('hidden');
       }
+
+      // Modal functions for creating a new group from two orphan vendors
+      function showCreateGroupModal(vendor1Id, vendor1Name, vendor2Id, vendor2Name) {
+        document.getElementById('createGroupVendor1').textContent = vendor1Name;
+        document.getElementById('createGroupVendor2').textContent = vendor2Name;
+        document.getElementById('createGroupVendorId1').value = vendor1Id;
+        document.getElementById('createGroupVendorId2').value = vendor2Id;
+        document.getElementById('createGroupParentName').value = '';
+        document.getElementById('createGroupCategory').value = '';
+        document.getElementById('createGroupModal').classList.remove('hidden');
+        // Focus the parent name input
+        document.getElementById('createGroupParentName').focus();
+      }
+
+      function hideCreateGroupModal() {
+        document.getElementById('createGroupModal').classList.add('hidden');
+      }
     </script>
   `;
 
@@ -689,6 +753,7 @@ function renderVendorsListPage(
     ${tableHtml}
     ${groupFormHtml}
     ${addChildModalHtml}
+    ${createGroupModalHtml}
     ${scriptHtml}
   `;
 

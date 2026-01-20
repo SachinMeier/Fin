@@ -34,7 +34,7 @@ export const DEFAULT_PATTERN_RULES: Array<{
   {
     pattern:
       "*{JEWEL OSCO,SAFEWAY,SHAW'S,STAR MARKET,WHOLE FOODS,KROGER,FRED MEYER,GERBES,HARRIS TEETER,JAYC,PAY LESS,COSTCO,SAM'S CLUB,PUBLIX,WEGMANS,TRADER JOE'S}*",
-    categoryName: "Grocery",
+    categoryName: "Groceries",
   },
 ];
 
