@@ -41,6 +41,19 @@ interface Category {
   name: string;
 }
 
+interface ChildVendorTransactions {
+  vendor: { id: number; name: string };
+  transactions: Array<{
+    id: number;
+    date: string;
+    amount: number;
+    reference_number: string;
+    statement_period: string;
+    statement_account: string;
+  }>;
+  totalAmount: number;
+}
+
 // GET /vendors - List all vendors with optional category filter
 router.get("/", (req, res) => {
   const db = getDatabase();
@@ -123,6 +136,7 @@ router.get("/", (req, res) => {
 router.get("/:id", (req, res) => {
   const db = getDatabase();
   const vendorId = Number(req.params.id);
+  const showChildTransactions = req.query.showChildTransactions === "true";
 
   const vendor = db
     .prepare(
@@ -174,8 +188,52 @@ router.get("/:id", (req, res) => {
     .prepare("SELECT id, name FROM vendors WHERE parent_vendor_id = ? ORDER BY name")
     .all(vendorId) as Array<{ id: number; name: string }>;
 
+  // Get child vendor transactions if requested and this is a parent with no own transactions
+  let childVendorTransactions: ChildVendorTransactions[] = [];
+  const isParentWithNoOwnTransactions = childVendors.length > 0 && transactions.length === 0;
+
+  if (showChildTransactions && isParentWithNoOwnTransactions) {
+    childVendorTransactions = childVendors.map((cv) => {
+      const cvTransactions = db
+        .prepare(
+          `
+        SELECT t.*, s.period AS statement_period, s.account AS statement_account
+        FROM transactions t
+        JOIN statements s ON t.statement_id = s.id
+        WHERE t.vendor_id = ?
+        ORDER BY t.date DESC
+        LIMIT 100
+      `
+        )
+        .all(cv.id) as Array<{
+        id: number;
+        date: string;
+        amount: number;
+        reference_number: string;
+        statement_period: string;
+        statement_account: string;
+      }>;
+      const cvTotal = cvTransactions.reduce((sum, t) => sum + t.amount, 0);
+      return {
+        vendor: cv,
+        transactions: cvTransactions,
+        totalAmount: cvTotal,
+      };
+    });
+  }
+
   res.send(
-    renderVendorDetailPage(vendor, transactions, totalAmount, allCategories, potentialParents, childVendors)
+    renderVendorDetailPage(
+      vendor,
+      transactions,
+      totalAmount,
+      allCategories,
+      potentialParents,
+      childVendors,
+      isParentWithNoOwnTransactions,
+      showChildTransactions,
+      childVendorTransactions
+    )
   );
 });
 
@@ -650,7 +708,10 @@ function renderVendorDetailPage(
   totalAmount: number,
   allCategories: CategoryWithDepth[],
   potentialParents: Array<{ id: number; name: string }>,
-  childVendors: Array<{ id: number; name: string }>
+  childVendors: Array<{ id: number; name: string }>,
+  isParentWithNoOwnTransactions: boolean,
+  showChildTransactions: boolean,
+  childVendorTransactions: ChildVendorTransactions[]
 ): string {
   const inputClasses =
     "w-full px-4 py-2 text-base border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-200 dark:focus:ring-gray-700 focus:border-gray-300 dark:focus:border-gray-600 transition-colors";
@@ -780,6 +841,134 @@ function renderVendorDetailPage(
     emptyMessage: "No transactions for this vendor.",
   });
 
+  // Render child vendor transactions grouped by vendor with collapsible sections
+  const renderChildTransactionsHtml = (): string => {
+    if (!showChildTransactions || childVendorTransactions.length === 0) {
+      return "";
+    }
+
+    const grandTotal = childVendorTransactions.reduce((sum, cv) => sum + cv.totalAmount, 0);
+    const totalTransactionCount = childVendorTransactions.reduce((sum, cv) => sum + cv.transactions.length, 0);
+
+    const vendorSections = childVendorTransactions.map((cv, index) => {
+      const transactionRows = cv.transactions.map((t) => `
+        <tr class="border-b border-gray-100 dark:border-gray-800">
+          <td class="px-6 py-3 text-sm">${t.date}</td>
+          <td class="px-6 py-3 text-sm">${t.statement_account}</td>
+          <td class="px-6 py-3 text-sm">${t.statement_period}</td>
+          <td class="px-6 py-3 text-sm text-right font-mono">${formatCurrency(t.amount)}</td>
+        </tr>
+      `).join("");
+
+      return `
+        <div class="border-b border-gray-200 dark:border-gray-800 last:border-b-0">
+          <button
+            type="button"
+            onclick="toggleVendorSection(${index})"
+            class="w-full px-6 py-4 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
+          >
+            <div class="flex items-center gap-3">
+              <svg id="chevron-${index}" class="w-4 h-4 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+              </svg>
+              <span class="font-semibold text-gray-900 dark:text-gray-100">
+                <a href="/vendors/${cv.vendor.id}" class="hover:underline" onclick="event.stopPropagation()">${escapeHtml(cv.vendor.name)}</a>
+              </span>
+              <span class="text-sm text-gray-500 dark:text-gray-400">(${cv.transactions.length} transactions)</span>
+            </div>
+            <span class="font-semibold font-mono text-gray-900 dark:text-gray-100">${formatCurrency(cv.totalAmount)}</span>
+          </button>
+          <div id="vendor-section-${index}" class="overflow-hidden">
+            <table class="w-full">
+              <tbody>
+                ${transactionRows}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    return `
+      <div class="flex gap-6 text-sm text-gray-500 dark:text-gray-400 mb-6">
+        <span><span class="font-medium text-gray-900 dark:text-gray-100">Total Transactions:</span> ${totalTransactionCount}</span>
+        <span><span class="font-medium text-gray-900 dark:text-gray-100">Grand Total:</span> ${formatCurrency(grandTotal)}</span>
+      </div>
+
+      <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-sm overflow-hidden">
+        <div class="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 px-6 py-3 flex items-center justify-between">
+          <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Child Vendor Transactions</span>
+          <div class="flex gap-2">
+            <button type="button" onclick="expandAllSections()" class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Expand All</button>
+            <span class="text-gray-300 dark:text-gray-600">|</span>
+            <button type="button" onclick="collapseAllSections()" class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Collapse All</button>
+          </div>
+        </div>
+        ${vendorSections}
+      </div>
+
+      <script>
+        var vendorSectionCount = ${childVendorTransactions.length};
+
+        function toggleVendorSection(index) {
+          var section = document.getElementById('vendor-section-' + index);
+          var chevron = document.getElementById('chevron-' + index);
+          if (section.style.maxHeight && section.style.maxHeight !== '0px') {
+            section.style.maxHeight = '0px';
+            chevron.classList.remove('-rotate-180');
+          } else {
+            section.style.maxHeight = section.scrollHeight + 'px';
+            chevron.classList.add('-rotate-180');
+          }
+        }
+
+        function expandAllSections() {
+          for (var i = 0; i < vendorSectionCount; i++) {
+            var section = document.getElementById('vendor-section-' + i);
+            var chevron = document.getElementById('chevron-' + i);
+            section.style.maxHeight = section.scrollHeight + 'px';
+            chevron.classList.add('-rotate-180');
+          }
+        }
+
+        function collapseAllSections() {
+          for (var i = 0; i < vendorSectionCount; i++) {
+            var section = document.getElementById('vendor-section-' + i);
+            var chevron = document.getElementById('chevron-' + i);
+            section.style.maxHeight = '0px';
+            chevron.classList.remove('-rotate-180');
+          }
+        }
+
+        // Initialize all sections as expanded
+        document.addEventListener('DOMContentLoaded', function() {
+          expandAllSections();
+        });
+      </script>
+    `;
+  };
+
+  // Show child transactions button for parents with no own transactions
+  const showChildTransactionsButtonHtml = isParentWithNoOwnTransactions && !showChildTransactions
+    ? `
+      <div class="text-center py-8">
+        <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">This vendor has no transactions of its own, but has ${childVendors.length} child vendor(s).</p>
+        ${renderLinkButton({ label: "Show Child Transactions", href: `/vendors/${vendor.id}?showChildTransactions=true` })}
+      </div>
+    `
+    : "";
+
+  // Determine which transaction section to show
+  const transactionSectionHtml = showChildTransactions && isParentWithNoOwnTransactions
+    ? renderChildTransactionsHtml()
+    : showChildTransactionsButtonHtml || `
+      <div class="flex gap-6 text-sm text-gray-500 dark:text-gray-400 mb-6">
+        <span><span class="font-medium text-gray-900 dark:text-gray-100">Transactions:</span> ${transactions.length}</span>
+        <span><span class="font-medium text-gray-900 dark:text-gray-100">Total:</span> ${formatCurrency(totalAmount)}</span>
+      </div>
+      ${tableHtml}
+    `;
+
   const categoryBadge = vendor.category_name
     ? renderCategoryPill({
         name: vendor.category_name,
@@ -818,12 +1007,7 @@ function renderVendorDetailPage(
       </div>
     </div>
 
-    <div class="flex gap-6 text-sm text-gray-500 dark:text-gray-400 mb-6">
-      <span><span class="font-medium text-gray-900 dark:text-gray-100">Transactions:</span> ${transactions.length}</span>
-      <span><span class="font-medium text-gray-900 dark:text-gray-100">Total:</span> ${formatCurrency(totalAmount)}</span>
-    </div>
-
-    ${tableHtml}
+    ${transactionSectionHtml}
   `;
 
   return layout({
