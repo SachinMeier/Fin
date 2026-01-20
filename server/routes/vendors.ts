@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { getDatabase } from "../db/index.js";
 import { getCategoryTreeFlat, CategoryWithDepth } from "../db/categoryQueries.js";
-import { getVendorTreeFlat, wouldCreateVendorCycle, getRootVendors, VendorWithDepth } from "../db/vendorQueries.js";
+import { getVendorTreeFlat, wouldCreateVendorCycle, getRootVendors, updateVendorCategoryWithDescendants, VendorWithDepth } from "../db/vendorQueries.js";
 import { UNCATEGORIZED_CATEGORY_ID } from "../db/migrations.js";
 import {
   layout,
@@ -179,18 +179,15 @@ router.get("/:id", (req, res) => {
   );
 });
 
-// POST /vendors/:id/categorize - Assign category to vendor
+// POST /vendors/:id/categorize - Assign category to vendor and all descendants
 router.post("/:id/categorize", (req, res) => {
-  const db = getDatabase();
   const vendorId = Number(req.params.id);
   const categoryIdRaw = req.body.category_id;
   const categoryId =
     categoryIdRaw && categoryIdRaw !== "" ? Number(categoryIdRaw) : UNCATEGORIZED_CATEGORY_ID;
 
-  db.prepare("UPDATE vendors SET category_id = ? WHERE id = ?").run(
-    categoryId,
-    vendorId
-  );
+  // Update vendor and all descendants with the same category
+  updateVendorCategoryWithDescendants(vendorId, categoryId);
 
   // Redirect back based on where the request came from
   const returnTo = req.body.return_to;
@@ -273,10 +270,11 @@ router.post("/group", (req, res) => {
   db.transaction(() => {
     // Check if a vendor with this name already exists
     const existingVendor = db
-      .prepare("SELECT id FROM vendors WHERE name = ?")
-      .get(parentName) as { id: number } | undefined;
+      .prepare("SELECT id, category_id FROM vendors WHERE name = ?")
+      .get(parentName) as { id: number; category_id: number } | undefined;
 
     let parentId: number;
+    let effectiveCategoryId: number;
 
     if (existingVendor) {
       // Don't allow using an existing vendor as the parent if it's one of the selected children
@@ -284,9 +282,12 @@ router.post("/group", (req, res) => {
         throw new Error("Parent name matches one of the selected vendors");
       }
       parentId = existingVendor.id;
-      // Optionally update the category of the existing parent
+      // If a category was specified, update the parent; otherwise use the parent's existing category
       if (categoryId !== UNCATEGORIZED_CATEGORY_ID) {
         db.prepare("UPDATE vendors SET category_id = ? WHERE id = ?").run(categoryId, parentId);
+        effectiveCategoryId = categoryId;
+      } else {
+        effectiveCategoryId = existingVendor.category_id;
       }
     } else {
       // Create a new parent vendor
@@ -294,13 +295,14 @@ router.post("/group", (req, res) => {
         .prepare("INSERT INTO vendors (name, category_id) VALUES (?, ?)")
         .run(parentName, categoryId);
       parentId = Number(parentResult.lastInsertRowid);
+      effectiveCategoryId = categoryId;
     }
 
-    // Update child vendors to point to the parent
+    // Update child vendors to point to the parent and inherit the parent's category
     const placeholders = vendorIds.map(() => "?").join(",");
     db.prepare(
-      `UPDATE vendors SET parent_vendor_id = ? WHERE id IN (${placeholders})`
-    ).run(parentId, ...vendorIds);
+      `UPDATE vendors SET parent_vendor_id = ?, category_id = ? WHERE id IN (${placeholders})`
+    ).run(parentId, effectiveCategoryId, ...vendorIds);
   })();
 
   res.redirect("/vendors");

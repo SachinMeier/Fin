@@ -176,3 +176,25 @@ export function getChildVendors(parentId: number): Vendor[] {
     )
     .all(parentId) as Vendor[];
 }
+
+/**
+ * Update a vendor's category and recursively apply the same category to all descendants.
+ * This ensures that when a parent is categorized, all children inherit the category.
+ */
+export function updateVendorCategoryWithDescendants(vendorId: number, categoryId: number): number {
+  const db = getDatabase();
+
+  // Get all descendant IDs (includes the vendor itself)
+  const descendantIds = getVendorDescendantIds(vendorId);
+
+  if (descendantIds.length === 0) {
+    return 0;
+  }
+
+  const placeholders = descendantIds.map(() => "?").join(",");
+  const result = db
+    .prepare(`UPDATE vendors SET category_id = ? WHERE id IN (${placeholders})`)
+    .run(categoryId, ...descendantIds);
+
+  return result.changes;
+}

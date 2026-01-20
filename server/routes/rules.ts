@@ -354,15 +354,17 @@ router.post("/apply-vendor-groupings", (req, res) => {
         if (vendorIds.length >= 2 && parentName) {
           // Check if a vendor with this name already exists
           const existingVendor = db
-            .prepare("SELECT id FROM vendors WHERE name = ?")
-            .get(parentName) as { id: number } | undefined;
+            .prepare("SELECT id, category_id FROM vendors WHERE name = ?")
+            .get(parentName) as { id: number; category_id: number } | undefined;
 
           let parentId: number;
+          let parentCategoryId: number;
 
           if (existingVendor) {
             // Use existing vendor as parent (if it's not one of the children)
             if (!vendorIds.includes(existingVendor.id)) {
               parentId = existingVendor.id;
+              parentCategoryId = existingVendor.category_id;
             } else {
               // Skip this group - parent name matches a child
               groupIndex++;
@@ -374,13 +376,14 @@ router.post("/apply-vendor-groupings", (req, res) => {
               .prepare("INSERT INTO vendors (name, category_id) VALUES (?, ?)")
               .run(parentName, UNCATEGORIZED_CATEGORY_ID);
             parentId = Number(parentResult.lastInsertRowid);
+            parentCategoryId = UNCATEGORIZED_CATEGORY_ID;
           }
 
-          // Update child vendors to point to the parent
+          // Update child vendors to point to the parent and inherit the parent's category
           const placeholders = vendorIds.map(() => "?").join(",");
           db.prepare(
-            `UPDATE vendors SET parent_vendor_id = ? WHERE id IN (${placeholders})`
-          ).run(parentId, ...vendorIds);
+            `UPDATE vendors SET parent_vendor_id = ?, category_id = ? WHERE id IN (${placeholders})`
+          ).run(parentId, parentCategoryId, ...vendorIds);
 
           appliedCount++;
         }
