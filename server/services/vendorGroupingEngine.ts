@@ -222,6 +222,9 @@ export function suggestVendorGroupings(
 
     // Check against all children and parents in parentsWithChildren
     for (const [childNorm, parentInfo] of childToParentMap) {
+      // Skip if vendor would be suggested as a child of itself (cyclic)
+      if (vendorId === parentInfo.parentId) continue;
+
       const similarity = lcpSimilarity(normalized, childNorm);
       if (similarity >= cfg.similarityThreshold) {
         const suggestion = findOrCreateSuggestion(

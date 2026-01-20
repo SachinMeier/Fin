@@ -562,6 +562,64 @@ describe("suggestVendorGroupings", () => {
       expect(suggestions[0].childVendorIds).toEqual([5]);
     });
 
+    it("does not suggest parents as children of themselves (cyclic)", () => {
+      // BUG REPRODUCTION: When a parent with children is also in the vendors list,
+      // it should NOT be suggested as a child of itself.
+      // This happens when the vendors list includes all root vendors (parent_vendor_id = null)
+      // and the same parent also appears in parentsWithChildren.
+      const vendors: VendorInfo[] = [
+        // The parent itself appears as an ungrouped vendor (since parent_vendor_id is null)
+        { id: 100, name: "Starbucks", parent_vendor_id: null },
+        // A new vendor that should be grouped
+        { id: 5, name: "STARBUCKS #5678", parent_vendor_id: null },
+      ];
+
+      const parentsWithChildren: ParentWithChildrenInfo[] = [
+        {
+          parent: { id: 100, name: "Starbucks", parent_vendor_id: null },
+          children: [{ id: 1, name: "STARBUCKS #1234", parent_vendor_id: 100 }],
+        },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors, [], parentsWithChildren);
+
+      // Should NOT suggest the parent (id: 100) as a child of itself
+      // Only vendor 5 should be suggested as a child
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].parentName).toBe("Starbucks");
+      expect(suggestions[0].childVendorIds).toEqual([5]);
+      expect(suggestions[0].childVendorIds).not.toContain(100);
+    });
+
+    it("does not suggest existing children as potential parents", () => {
+      // Children (vendors that have a parent) should not be evaluated as potential parents.
+      // This is already handled by filtering, but we test it explicitly.
+      const vendors: VendorInfo[] = [
+        { id: 5, name: "STARBUCKS #5678", parent_vendor_id: null },
+      ];
+
+      // Even if we accidentally pass a child vendor as an existing parent,
+      // the algorithm should handle it gracefully
+      const existingParents: VendorInfo[] = [
+        // This is actually a child, should not be used as a parent
+        { id: 1, name: "STARBUCKS #1234", parent_vendor_id: 100 },
+      ];
+
+      const parentsWithChildren: ParentWithChildrenInfo[] = [
+        {
+          parent: { id: 100, name: "Starbucks", parent_vendor_id: null },
+          children: [{ id: 1, name: "STARBUCKS #1234", parent_vendor_id: 100 }],
+        },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors, existingParents, parentsWithChildren);
+
+      // Should match to the actual parent "Starbucks", not to the child
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].parentName).toBe("Starbucks");
+      expect(suggestions[0].childVendorIds).toEqual([5]);
+    });
+
     it("handles parent with children alongside root vendors without children", () => {
       // Mix of: parent with children + root vendors without children
       const vendors: VendorInfo[] = [
