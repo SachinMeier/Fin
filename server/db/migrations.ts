@@ -37,7 +37,7 @@ export const DEFAULT_PATTERN_RULES: Array<{
     categoryName: "Groceries",
   },
   {
-    pattern: "*{PIZZA,SUSHI,BURGER,CHICKEN,ICE CREAM,DINER}*",
+    pattern: "*{PIZZA,SUSHI,BURGER,CHICKEN,ICE CREAM,DINER,TACO,TACQUERIA}*",
     categoryName: "Restaurants",
   },
   { pattern: "* DELI *", categoryName: "Restaurants" },
