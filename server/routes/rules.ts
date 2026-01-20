@@ -393,7 +393,7 @@ router.post("/apply-vendor-groupings", (req, res) => {
     }
   })();
 
-  res.redirect(`/rules?grouped=${appliedCount}`);
+  res.redirect("/vendors");
 });
 
 // ============================================================================
