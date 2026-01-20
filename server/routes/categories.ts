@@ -74,6 +74,9 @@ const defaultCategories: DefaultCategory[] = [
 
   // Expenses > Entertainment
   { name: "Entertainment", parent: "Expenses", color: "#EC4899" },
+  { name: "Sports", parent: "Entertainment", color: "#DB2777" },
+  { name: "Concerts & Shows", parent: "Entertainment", color: "#BE185D" },
+  { name: "Subscriptions", parent: "Entertainment", color: "#9D174D" },
 
   // Expenses > Shopping
   { name: "Shopping", parent: "Expenses", color: "#14B8A6" },
