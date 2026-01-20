@@ -378,12 +378,14 @@ function renderRulesListPage(rules: DbRule[], options: RulesListOptions): string
     <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">Your rules, applied first.</p>
     ${customRulesHtml}
 
-    <h2 class="text-lg font-medium text-gray-700 dark:text-gray-300 mb-3 mt-8">Default Pattern Rules</h2>
+    <div class="flex items-center justify-between mb-3 mt-8">
+      <h2 class="text-lg font-medium text-gray-700 dark:text-gray-300">Default Pattern Rules</h2>
+      <form action="/rules/import-defaults" method="POST">
+        ${renderButton({ label: "Import Default Rules", type: "submit" })}
+      </form>
+    </div>
     <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">Built-in rules, applied after custom rules. Editing a default rule converts it to a custom rule.</p>
     ${defaultRulesHtml}
-    <form action="/rules/import-defaults" method="POST" class="mt-3">
-      ${renderButton({ label: "Import Default Rules", type: "submit" })}
-    </form>
 
     <div class="mt-8 pt-6 border-t border-gray-200 dark:border-gray-800">
       <h2 class="text-lg font-medium text-gray-700 dark:text-gray-300 mb-3">Vendor Tools</h2>
