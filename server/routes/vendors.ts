@@ -265,6 +265,12 @@ router.post("/:id/reparent", (req, res) => {
   const parentIdRaw = req.body.parent_vendor_id;
   const parentVendorId = parentIdRaw && parentIdRaw !== "" ? Number(parentIdRaw) : null;
 
+  // Get current parent before update
+  const currentVendor = db
+    .prepare("SELECT parent_vendor_id FROM vendors WHERE id = ?")
+    .get(vendorId) as { parent_vendor_id: number | null } | undefined;
+  const oldParentId = currentVendor?.parent_vendor_id ?? null;
+
   // Check for cycle if setting a parent
   if (parentVendorId !== null && wouldCreateVendorCycle(vendorId, parentVendorId)) {
     res.status(400).send("Cannot set parent: would create a cycle");
@@ -275,6 +281,24 @@ router.post("/:id/reparent", (req, res) => {
     parentVendorId,
     vendorId
   );
+
+  // If removing from a parent, check if old parent should be auto-deleted
+  // (when it has no remaining children and no transactions of its own)
+  if (oldParentId !== null && oldParentId !== parentVendorId) {
+    const childCount = db
+      .prepare("SELECT COUNT(*) as cnt FROM vendors WHERE parent_vendor_id = ?")
+      .get(oldParentId) as { cnt: number };
+
+    if (childCount.cnt === 0) {
+      const transactionCount = db
+        .prepare("SELECT COUNT(*) as cnt FROM transactions WHERE vendor_id = ?")
+        .get(oldParentId) as { cnt: number };
+
+      if (transactionCount.cnt === 0) {
+        db.prepare("DELETE FROM vendors WHERE id = ?").run(oldParentId);
+      }
+    }
+  }
 
   res.redirect(`/vendors/${vendorId}`);
 });
