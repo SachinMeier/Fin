@@ -41,6 +41,10 @@ export const DEFAULT_PATTERN_RULES: Array<{
     categoryName: "Restaurants",
   },
   { pattern: "* DELI *", categoryName: "Restaurants" },
+  {
+    pattern: "*{IKEA,WAYFAIR,HOME DEPOT,LOWE'S,CRATE & BARREL,CRATE AND BARREL}*",
+    categoryName: "Furniture",
+  },
 ];
 
 /** Generate SQL for inserting default pattern rules (looks up category by name) */

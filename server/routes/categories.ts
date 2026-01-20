@@ -56,6 +56,7 @@ const defaultCategories: DefaultCategory[] = [
   { name: "Housing", parent: "Expenses", color: "#A855F7" },
   { name: "Utilities", parent: "Housing", color: "#9333EA" },
   { name: "Rent", parent: "Housing", color: "#7C3AED" },
+  { name: "Furniture", parent: "Housing", color: "#6D28D9" },
 
   // Expenses > Food & Drink - Orange family
   { name: "Food & Drink", parent: "Expenses", color: "#FB923C" },
