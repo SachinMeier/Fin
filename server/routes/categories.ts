@@ -576,7 +576,7 @@ function renderCategoriesListPage(
           Categories allow you to do breakdowns and drilldowns on your earning/spending patterns. Import the defaults or create your own!
         </p>
       </div>
-      <div class="flex gap-2">
+      <div class="flex gap-2 mt-1 shrink-0 ml-6">
         <form method="POST" action="/categories/import-defaults" class="inline">
           ${renderButton({ label: "Import Defaults", variant: "normal", type: "submit" })}
         </form>
