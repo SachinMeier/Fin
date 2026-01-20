@@ -115,14 +115,14 @@ export function lcpSimilarity(a: string, b: string): number {
  * Configuration for the grouping engine
  */
 export interface GroupingConfig {
-  /** Minimum LCP similarity to consider a match (0-1). Default: 0.8 */
+  /** Minimum LCP similarity to consider a match (0-1). Default: 0.6 */
   similarityThreshold: number;
   /** Minimum length of normalized name to consider for grouping. Default: 3 */
   minNameLength: number;
 }
 
 const DEFAULT_CONFIG: GroupingConfig = {
-  similarityThreshold: 0.8,
+  similarityThreshold: 0.6,
   minNameLength: 3,
 };
 
@@ -386,13 +386,13 @@ export function createCanonicalName(normalized: string): string {
  *
  * @param name1 - First vendor name
  * @param name2 - Second vendor name
- * @param threshold - Similarity threshold (default: 0.8)
+ * @param threshold - Similarity threshold (default: 0.6)
  * @returns True if the names should be grouped
  */
 export function shouldGroupVendors(
   name1: string,
   name2: string,
-  threshold: number = 0.8
+  threshold: number = 0.6
 ): boolean {
   const norm1 = normalizeVendorName(name1);
   const norm2 = normalizeVendorName(name2);
