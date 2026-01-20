@@ -36,6 +36,11 @@ export const DEFAULT_PATTERN_RULES: Array<{
       "*{JEWEL OSCO,SAFEWAY,SHAW'S,STAR MARKET,WHOLE FOODS,KROGER,FRED MEYER,GERBES,HARRIS TEETER,JAYC,PAY LESS,COSTCO,SAM'S CLUB,PUBLIX,WEGMANS,TRADER JOE'S}*",
     categoryName: "Groceries",
   },
+  {
+    pattern: "*{PIZZA,SUSHI,BURGER,CHICKEN,ICE CREAM,DINER}*",
+    categoryName: "Restaurants",
+  },
+  { pattern: "* DELI *", categoryName: "Restaurants" },
 ];
 
 /** Generate SQL for inserting default pattern rules (looks up category by name) */
