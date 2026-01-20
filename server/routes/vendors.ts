@@ -592,16 +592,67 @@ function renderVendorDetailPage(
   `
     : `<p class="text-sm text-gray-500 dark:text-gray-400">This vendor has child vendors and cannot be moved under another parent.</p>`;
 
-  // Child vendors list
+  // Child vendors list with remove buttons
   const childVendorsHtml =
     childVendors.length > 0
       ? `
     <div class="mt-4">
       <h3 class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Child Vendors</h3>
       <ul class="space-y-1">
-        ${childVendors.map((cv) => `<li><a href="/vendors/${cv.id}" class="text-sm hover:underline">${escapeHtml(cv.name)}</a></li>`).join("")}
+        ${childVendors
+          .map(
+            (cv) => `
+          <li class="flex items-center gap-2 group">
+            <a href="/vendors/${cv.id}" class="text-sm hover:underline flex-1">${escapeHtml(cv.name)}</a>
+            <button
+              type="button"
+              onclick="showRemoveChildModal(${cv.id}, '${escapeHtml(cv.name).replace(/'/g, "\\'")}', ${vendor.id})"
+              class="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-opacity"
+              title="Remove from parent"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </li>
+        `
+          )
+          .join("")}
       </ul>
     </div>
+
+    <!-- Remove Child Modal -->
+    <div id="removeChildModal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+      <div class="flex items-center justify-center min-h-screen px-4">
+        <div class="fixed inset-0 bg-black/30 dark:bg-black/50" onclick="hideRemoveChildModal()"></div>
+        <div class="relative bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 max-w-sm w-full shadow-lg">
+          <h3 class="text-lg font-medium mb-2">Remove Child Vendor</h3>
+          <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+            Remove <span id="removeChildName" class="font-medium text-gray-900 dark:text-gray-100"></span> from this vendor? Its category will be preserved.
+          </p>
+          <form id="removeChildForm" method="POST" class="flex gap-2 justify-end">
+            <input type="hidden" name="parent_vendor_id" value="">
+            <button type="button" onclick="hideRemoveChildModal()" class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors">
+              Cancel
+            </button>
+            <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors">
+              Remove
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      function showRemoveChildModal(childId, childName, parentId) {
+        document.getElementById('removeChildName').textContent = childName;
+        document.getElementById('removeChildForm').action = '/vendors/' + childId + '/reparent';
+        document.getElementById('removeChildModal').classList.remove('hidden');
+      }
+      function hideRemoveChildModal() {
+        document.getElementById('removeChildModal').classList.add('hidden');
+      }
+    </script>
   `
       : "";
 
