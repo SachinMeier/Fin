@@ -376,8 +376,19 @@ function renderVendorsListPage(
           categories: inlineSelectCategories,
         });
 
+        // Draggable: root vendors without children can be dragged to become children
+        const canBeDragged = v.parent_vendor_id === null && !hasChildren;
+        // Droppable: root vendors (with or without children) can accept new children
+        const canAcceptChild = v.parent_vendor_id === null;
+        const dragAttrs = canBeDragged
+          ? `draggable="true" data-vendor-id="${v.id}" data-vendor-name="${escapeHtml(v.name).replace(/"/g, "&quot;")}"`
+          : "";
+        const dropAttrs = canAcceptChild
+          ? `data-drop-target="true" data-parent-id="${v.id}" data-parent-name="${escapeHtml(v.name).replace(/"/g, "&quot;")}"`
+          : "";
+
         return `
-          <tr class="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50">
+          <tr class="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 vendor-row" ${dragAttrs} ${dropAttrs}>
             <td class="px-3 py-3 text-sm">
               ${checkbox}
             </td>
@@ -442,7 +453,31 @@ function renderVendorsListPage(
     </div>
   `;
 
-  // JavaScript for handling vendor selection and grouping
+  // Modal for confirming adding a child to a parent via drag-and-drop
+  const addChildModalHtml = `
+    <div id="addChildModal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+      <div class="flex items-center justify-center min-h-screen px-4">
+        <div class="fixed inset-0 bg-black/30 dark:bg-black/50" onclick="hideAddChildModal()"></div>
+        <div class="relative bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 max-w-sm w-full shadow-lg">
+          <h3 class="text-lg font-medium mb-2">Add Child Vendor</h3>
+          <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+            Add <span id="addChildName" class="font-medium text-gray-900 dark:text-gray-100"></span> as a child of <span id="addChildParentName" class="font-medium text-gray-900 dark:text-gray-100"></span>? The child will inherit the parent's category.
+          </p>
+          <form id="addChildForm" method="POST" class="flex gap-2 justify-end">
+            <input type="hidden" name="parent_vendor_id" id="addChildParentId" value="">
+            <button type="button" onclick="hideAddChildModal()" class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors">
+              Cancel
+            </button>
+            <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
+              Add as Child
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // JavaScript for handling vendor selection, grouping, and drag-drop
   const scriptHtml = `
     <script>
       (function() {
@@ -509,7 +544,79 @@ function renderVendorsListPage(
 
         // Initial state
         updateUI();
+
+        // ===============================
+        // Drag and drop for adding children to parents
+        // ===============================
+        var draggableRows = document.querySelectorAll('tr[draggable="true"]');
+        var dropTargets = document.querySelectorAll('tr[data-drop-target="true"]');
+        var draggedVendorId = null;
+        var draggedVendorName = null;
+
+        draggableRows.forEach(function(row) {
+          row.addEventListener('dragstart', function(e) {
+            draggedVendorId = row.dataset.vendorId;
+            draggedVendorName = row.dataset.vendorName;
+            row.classList.add('opacity-50');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', draggedVendorId);
+          });
+
+          row.addEventListener('dragend', function() {
+            row.classList.remove('opacity-50');
+            draggedVendorId = null;
+            draggedVendorName = null;
+            // Remove all drop highlights
+            dropTargets.forEach(function(target) {
+              target.classList.remove('bg-green-50', 'dark:bg-green-900/20', 'ring-2', 'ring-green-500', 'ring-inset');
+            });
+          });
+        });
+
+        dropTargets.forEach(function(target) {
+          target.addEventListener('dragover', function(e) {
+            // Only allow drop if not dropping on itself
+            if (target.dataset.parentId !== draggedVendorId) {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              target.classList.add('bg-green-50', 'dark:bg-green-900/20', 'ring-2', 'ring-green-500', 'ring-inset');
+            }
+          });
+
+          target.addEventListener('dragleave', function(e) {
+            // Only remove highlight if leaving the row (not just moving between cells)
+            if (!target.contains(e.relatedTarget)) {
+              target.classList.remove('bg-green-50', 'dark:bg-green-900/20', 'ring-2', 'ring-green-500', 'ring-inset');
+            }
+          });
+
+          target.addEventListener('drop', function(e) {
+            e.preventDefault();
+            target.classList.remove('bg-green-50', 'dark:bg-green-900/20', 'ring-2', 'ring-green-500', 'ring-inset');
+
+            // Don't allow dropping on self
+            if (target.dataset.parentId === draggedVendorId) {
+              return;
+            }
+
+            // Show confirmation modal
+            showAddChildModal(draggedVendorId, draggedVendorName, target.dataset.parentId, target.dataset.parentName);
+          });
+        });
       })();
+
+      // Modal functions for adding child to parent
+      function showAddChildModal(childId, childName, parentId, parentName) {
+        document.getElementById('addChildName').textContent = childName;
+        document.getElementById('addChildParentName').textContent = parentName;
+        document.getElementById('addChildParentId').value = parentId;
+        document.getElementById('addChildForm').action = '/vendors/' + childId + '/reparent';
+        document.getElementById('addChildModal').classList.remove('hidden');
+      }
+
+      function hideAddChildModal() {
+        document.getElementById('addChildModal').classList.add('hidden');
+      }
     </script>
   `;
 
@@ -517,12 +624,13 @@ function renderVendorsListPage(
     <h1 class="text-2xl font-semibold mb-2">Vendors</h1>
     <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
       A list of all the vendors you've transacted with across all statements.
-      Select multiple root vendors (without children) to group them under a new parent.
+      Select multiple root vendors (without children) to group them under a new parent, or drag a vendor onto another to add it as a child.
       You can also use <a href="/rules" class="underline hover:text-gray-700 dark:hover:text-gray-300">Rules</a> for automatic grouping suggestions.
     </p>
     ${filterHtml}
     ${tableHtml}
     ${groupFormHtml}
+    ${addChildModalHtml}
     ${scriptHtml}
   `;
 
