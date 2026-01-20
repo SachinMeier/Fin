@@ -37,68 +37,72 @@ interface DefaultCategory {
 }
 
 // Default categories to import
+// Color scheme rules:
+// 1. Top-level siblings have distinct, bright colors (avoid dark blues/navies)
+// 2. Children are slightly darker than parents
+// 3. All colors maintain high contrast for readability
 const defaultCategories: DefaultCategory[] = [
-  // Top-level categories
-  { name: "Income", parent: null, color: "#22C55E" },
-  { name: "Expenses", parent: null, color: "#EF4444" },
-  { name: "Transfers", parent: null, color: "#6B7280" },
+  // Top-level categories - bright, distinct colors
+  { name: "Income", parent: null, color: "#10B981" },      // Emerald green
+  { name: "Expenses", parent: null, color: "#F43F5E" },    // Rose red
+  { name: "Transfers", parent: null, color: "#A78BFA" },   // Light violet (avoiding gray)
 
-  // Income children
-  { name: "Salary / Wages", parent: "Income", color: "#16A34A" },
-  { name: "Benefits", parent: "Income", color: "#15803D" },
-  { name: "Other (Income)", parent: "Income", color: "#14532D" },
+  // Income children - slightly darker greens
+  { name: "Salary / Wages", parent: "Income", color: "#059669" },
+  { name: "Benefits", parent: "Income", color: "#047857" },
+  { name: "Other (Income)", parent: "Income", color: "#065F46" },
 
-  // Expenses > Housing
-  { name: "Housing", parent: "Expenses", color: "#8B5CF6" },
-  { name: "Utilities", parent: "Housing", color: "#7C3AED" },
-  { name: "Rent", parent: "Housing", color: "#6D28D9" },
+  // Expenses > Housing - Violet/Purple family
+  { name: "Housing", parent: "Expenses", color: "#A855F7" },
+  { name: "Utilities", parent: "Housing", color: "#9333EA" },
+  { name: "Rent", parent: "Housing", color: "#7C3AED" },
 
-  // Expenses > Food & Drink
-  { name: "Food & Drink", parent: "Expenses", color: "#F97316" },
-  { name: "Groceries", parent: "Food & Drink", color: "#EA580C" },
-  { name: "Restaurants", parent: "Food & Drink", color: "#C2410C" },
-  { name: "Cafes", parent: "Food & Drink", color: "#9A3412" },
-  { name: "Bars & Clubs", parent: "Food & Drink", color: "#7C2D12" },
-  { name: "Food Delivery", parent: "Food & Drink", color: "#FB923C" },
+  // Expenses > Food & Drink - Orange family
+  { name: "Food & Drink", parent: "Expenses", color: "#FB923C" },
+  { name: "Groceries", parent: "Food & Drink", color: "#F97316" },
+  { name: "Restaurants", parent: "Food & Drink", color: "#EA580C" },
+  { name: "Cafes", parent: "Food & Drink", color: "#DC6A1D" },
+  { name: "Bars & Clubs", parent: "Food & Drink", color: "#C2410C" },
+  { name: "Food Delivery", parent: "Food & Drink", color: "#D95617" },
 
-  // Expenses > Transportation
-  { name: "Transportation", parent: "Expenses", color: "#3B82F6" },
-  { name: "Gas", parent: "Transportation", color: "#2563EB" },
-  { name: "Public Transit", parent: "Transportation", color: "#1D4ED8" },
-  { name: "Rideshare", parent: "Transportation", color: "#1E40AF" },
-  { name: "Parking", parent: "Transportation", color: "#1E3A8A" },
-  { name: "Airfare", parent: "Transportation", color: "#60A5FA" },
-  { name: "Vehicle Insurance", parent: "Transportation", color: "#93C5FD" },
-  { name: "Vehicle Maintenance", parent: "Transportation", color: "#BFDBFE" },
-  { name: "Other (Transportation)", parent: "Transportation", color: "#DBEAFE" },
+  // Expenses > Transportation - Cyan/Teal family (avoiding blue)
+  { name: "Transportation", parent: "Expenses", color: "#22D3EE" },
+  { name: "Gas", parent: "Transportation", color: "#06B6D4" },
+  { name: "Public Transit", parent: "Transportation", color: "#0891B2" },
+  { name: "Rideshare", parent: "Transportation", color: "#0E7490" },
+  { name: "Parking", parent: "Transportation", color: "#0D7285" },
+  { name: "Airfare", parent: "Transportation", color: "#14B8C4" },
+  { name: "Vehicle Insurance", parent: "Transportation", color: "#0C9CAD" },
+  { name: "Vehicle Maintenance", parent: "Transportation", color: "#0A8698" },
+  { name: "Other (Transportation)", parent: "Transportation", color: "#097A8A" },
 
-  // Expenses > Entertainment
-  { name: "Entertainment", parent: "Expenses", color: "#EC4899" },
-  { name: "Sports", parent: "Entertainment", color: "#DB2777" },
-  { name: "Concerts & Shows", parent: "Entertainment", color: "#BE185D" },
-  { name: "Subscriptions", parent: "Entertainment", color: "#9D174D" },
+  // Expenses > Entertainment - Pink/Fuchsia family
+  { name: "Entertainment", parent: "Expenses", color: "#F472B6" },
+  { name: "Sports", parent: "Entertainment", color: "#EC4899" },
+  { name: "Concerts & Shows", parent: "Entertainment", color: "#DB2777" },
+  { name: "Subscriptions", parent: "Entertainment", color: "#BE185D" },
 
-  // Expenses > Shopping
-  { name: "Shopping", parent: "Expenses", color: "#14B8A6" },
-  { name: "Clothing", parent: "Shopping", color: "#0D9488" },
-  { name: "Shoes", parent: "Shopping", color: "#0F766E" },
-  { name: "Accessories", parent: "Shopping", color: "#115E59" },
-  { name: "Electronics", parent: "Shopping", color: "#134E4A" },
-  { name: "Home Goods", parent: "Shopping", color: "#2DD4BF" },
-  { name: "Other (Shopping)", parent: "Shopping", color: "#5EEAD4" },
+  // Expenses > Shopping - Lime/Yellow-Green family
+  { name: "Shopping", parent: "Expenses", color: "#A3E635" },
+  { name: "Clothing", parent: "Shopping", color: "#84CC16" },
+  { name: "Shoes", parent: "Shopping", color: "#65A30D" },
+  { name: "Accessories", parent: "Shopping", color: "#4D7C0F" },
+  { name: "Electronics", parent: "Shopping", color: "#538714" },
+  { name: "Home Goods", parent: "Shopping", color: "#78A21C" },
+  { name: "Other (Shopping)", parent: "Shopping", color: "#6B9411" },
 
-  // Expenses > Health
-  { name: "Health", parent: "Expenses", color: "#F43F5E" },
-  { name: "Doctor", parent: "Health", color: "#E11D48" },
-  { name: "Dentist", parent: "Health", color: "#BE123C" },
-  { name: "Pharmacy", parent: "Health", color: "#9F1239" },
-  { name: "Gym", parent: "Health", color: "#881337" },
-  { name: "Other (Health)", parent: "Health", color: "#FB7185" },
+  // Expenses > Health - Coral/Red-Orange family
+  { name: "Health", parent: "Expenses", color: "#FB7185" },
+  { name: "Doctor", parent: "Health", color: "#F43F5E" },
+  { name: "Dentist", parent: "Health", color: "#E11D48" },
+  { name: "Pharmacy", parent: "Health", color: "#BE123C" },
+  { name: "Gym", parent: "Health", color: "#D13555" },
+  { name: "Other (Health)", parent: "Health", color: "#C9224A" },
 
-  // Transfers children
-  { name: "Tax Returns", parent: "Transfers", color: "#4B5563" },
-  { name: "Payments", parent: "Transfers", color: "#DEADBE" },
-  { name: "Other (Transfers)", parent: "Transfers", color: "#374151" },
+  // Transfers children - Light violet shades (avoiding grays)
+  { name: "Tax Returns", parent: "Transfers", color: "#8B5CF6" },
+  { name: "Payments", parent: "Transfers", color: "#7C3AED" },
+  { name: "Other (Transfers)", parent: "Transfers", color: "#6D28D9" },
 ];
 
 // ============================================================================
