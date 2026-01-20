@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { getDatabase } from "../db/index.js";
 import { getCategoryTreeFlat, CategoryWithDepth } from "../db/categoryQueries.js";
+import { getVendorTreeFlat, wouldCreateVendorCycle, getRootVendors, VendorWithDepth } from "../db/vendorQueries.js";
 import { UNCATEGORIZED_CATEGORY_ID } from "../db/migrations.js";
 import {
   layout,
@@ -23,6 +24,7 @@ interface Vendor {
   name: string;
   address: string | null;
   category_id: number | null;
+  parent_vendor_id: number | null;
 }
 
 interface VendorWithStats extends Vendor {
@@ -30,6 +32,8 @@ interface VendorWithStats extends Vendor {
   category_color: string | null;
   transaction_count: number;
   total_amount: number;
+  depth: number;
+  parent_vendor_name: string | null;
 }
 
 interface Category {
@@ -65,21 +69,49 @@ router.get("/", (req, res) => {
     }
   }
 
+  // Use recursive CTE to get hierarchical vendor list with depth
   const vendors = db
     .prepare(
       `
+    WITH RECURSIVE vendor_tree AS (
+      SELECT
+        id,
+        name,
+        address,
+        category_id,
+        parent_vendor_id,
+        0 AS depth,
+        name AS sort_path
+      FROM vendors
+      WHERE parent_vendor_id IS NULL
+
+      UNION ALL
+
+      SELECT
+        v.id,
+        v.name,
+        v.address,
+        v.category_id,
+        v.parent_vendor_id,
+        vt.depth + 1,
+        vt.sort_path || '/' || v.name
+      FROM vendors v
+      INNER JOIN vendor_tree vt ON v.parent_vendor_id = vt.id
+    )
     SELECT
-      v.id, v.name, v.address, v.category_id,
+      vt.id, vt.name, vt.address, vt.category_id, vt.parent_vendor_id, vt.depth,
       c.name AS category_name,
       c.color AS category_color,
+      pv.name AS parent_vendor_name,
       COUNT(t.id) AS transaction_count,
       COALESCE(SUM(t.amount), 0) AS total_amount
-    FROM vendors v
-    LEFT JOIN categories c ON v.category_id = c.id
-    LEFT JOIN transactions t ON t.vendor_id = v.id
-    ${whereClause}
-    GROUP BY v.id
-    ORDER BY v.name
+    FROM vendor_tree vt
+    LEFT JOIN categories c ON vt.category_id = c.id
+    LEFT JOIN vendors pv ON vt.parent_vendor_id = pv.id
+    LEFT JOIN transactions t ON t.vendor_id = vt.id
+    ${whereClause.replace("v.", "vt.")}
+    GROUP BY vt.id
+    ORDER BY vt.sort_path
   `
     )
     .all(...params) as VendorWithStats[];
@@ -95,13 +127,14 @@ router.get("/:id", (req, res) => {
   const vendor = db
     .prepare(
       `
-    SELECT v.*, c.name AS category_name, c.color AS category_color
+    SELECT v.*, c.name AS category_name, c.color AS category_color, pv.name AS parent_vendor_name
     FROM vendors v
     LEFT JOIN categories c ON v.category_id = c.id
+    LEFT JOIN vendors pv ON v.parent_vendor_id = pv.id
     WHERE v.id = ?
   `
     )
-    .get(vendorId) as (Vendor & { category_name: string | null; category_color: string | null }) | undefined;
+    .get(vendorId) as (Vendor & { category_name: string | null; category_color: string | null; parent_vendor_name: string | null }) | undefined;
 
   if (!vendor) {
     res.status(404).send("Vendor not found");
@@ -133,8 +166,16 @@ router.get("/:id", (req, res) => {
 
   const allCategories = getCategoryTreeFlat();
 
+  // Get potential parent vendors (root vendors only, excluding self)
+  const potentialParents = getRootVendors().filter((v) => v.id !== vendorId);
+
+  // Get child vendors of this vendor
+  const childVendors = db
+    .prepare("SELECT id, name FROM vendors WHERE parent_vendor_id = ? ORDER BY name")
+    .all(vendorId) as Array<{ id: number; name: string }>;
+
   res.send(
-    renderVendorDetailPage(vendor, transactions, totalAmount, allCategories)
+    renderVendorDetailPage(vendor, transactions, totalAmount, allCategories, potentialParents, childVendors)
   );
 });
 
@@ -160,6 +201,27 @@ router.post("/:id/categorize", (req, res) => {
   } else {
     res.redirect(`/vendors/${vendorId}`);
   }
+});
+
+// POST /vendors/:id/reparent - Set parent vendor
+router.post("/:id/reparent", (req, res) => {
+  const db = getDatabase();
+  const vendorId = Number(req.params.id);
+  const parentIdRaw = req.body.parent_vendor_id;
+  const parentVendorId = parentIdRaw && parentIdRaw !== "" ? Number(parentIdRaw) : null;
+
+  // Check for cycle if setting a parent
+  if (parentVendorId !== null && wouldCreateVendorCycle(vendorId, parentVendorId)) {
+    res.status(400).send("Cannot set parent: would create a cycle");
+    return;
+  }
+
+  db.prepare("UPDATE vendors SET parent_vendor_id = ? WHERE id = ?").run(
+    parentVendorId,
+    vendorId
+  );
+
+  res.redirect(`/vendors/${vendorId}`);
 });
 
 // POST /vendors/bulk-categorize - Assign category to multiple vendors
@@ -224,7 +286,15 @@ function renderVendorsListPage(
 
   const tableHtml = renderTable({
     columns: [
-      { key: "name", label: "Name" },
+      {
+        key: "name",
+        label: "Name",
+        render: (v, row) => {
+          const indent = "\u00A0\u00A0\u00A0\u00A0".repeat(row.depth);
+          const prefix = row.depth > 0 ? "└ " : "";
+          return `${indent}${prefix}${escapeHtml(String(v))}`;
+        },
+      },
       {
         key: "category_name",
         label: "Category",
@@ -266,7 +336,7 @@ function renderVendorsListPage(
 }
 
 function renderVendorDetailPage(
-  vendor: Vendor & { category_name: string | null; category_color: string | null },
+  vendor: Vendor & { category_name: string | null; category_color: string | null; parent_vendor_name: string | null },
   transactions: Array<{
     id: number;
     date: string;
@@ -276,7 +346,9 @@ function renderVendorDetailPage(
     statement_account: string;
   }>,
   totalAmount: number,
-  allCategories: CategoryWithDepth[]
+  allCategories: CategoryWithDepth[],
+  potentialParents: Array<{ id: number; name: string }>,
+  childVendors: Array<{ id: number; name: string }>
 ): string {
   const inputClasses =
     "w-full px-4 py-2 text-base border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-200 dark:focus:ring-gray-700 focus:border-gray-300 dark:focus:border-gray-600 transition-colors";
@@ -302,6 +374,43 @@ function renderVendorDetailPage(
     </form>
   `;
 
+  // Parent vendor selector (only show if this vendor has no children - can't make a parent into a child)
+  const canHaveParent = childVendors.length === 0;
+  const parentOptions = potentialParents
+    .map((p) => {
+      const selected = p.id === vendor.parent_vendor_id ? " selected" : "";
+      return `<option value="${p.id}"${selected}>${escapeHtml(p.name)}</option>`;
+    })
+    .join("");
+
+  const parentFormHtml = canHaveParent
+    ? `
+    <form method="POST" action="/vendors/${vendor.id}/reparent" class="flex items-end gap-2">
+      <div class="flex flex-col gap-1 flex-1">
+        <label class="text-sm font-medium text-gray-500 dark:text-gray-400" for="parent_vendor_id">Parent Vendor</label>
+        <select class="${inputClasses}" id="parent_vendor_id" name="parent_vendor_id">
+          <option value=""${vendor.parent_vendor_id === null ? " selected" : ""}>None (Root Vendor)</option>
+          ${parentOptions}
+        </select>
+      </div>
+      ${renderButton({ label: "Save", variant: "proceed", type: "submit" })}
+    </form>
+  `
+    : `<p class="text-sm text-gray-500 dark:text-gray-400">This vendor has child vendors and cannot be moved under another parent.</p>`;
+
+  // Child vendors list
+  const childVendorsHtml =
+    childVendors.length > 0
+      ? `
+    <div class="mt-4">
+      <h3 class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Child Vendors</h3>
+      <ul class="space-y-1">
+        ${childVendors.map((cv) => `<li><a href="/vendors/${cv.id}" class="text-sm hover:underline">${escapeHtml(cv.name)}</a></li>`).join("")}
+      </ul>
+    </div>
+  `
+      : "";
+
   const tableHtml = renderTable({
     columns: [
       { key: "date", label: "Date" },
@@ -326,6 +435,10 @@ function renderVendorDetailPage(
       })
     : renderUncategorizedPill();
 
+  const parentInfo = vendor.parent_vendor_name
+    ? `<span>·</span><span>Parent: <a href="/vendors/${vendor.parent_vendor_id}" class="hover:underline">${escapeHtml(vendor.parent_vendor_name)}</a></span>`
+    : "";
+
   const content = `
     <div class="flex items-start justify-between mb-6">
       <div>
@@ -333,14 +446,23 @@ function renderVendorDetailPage(
         <div class="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
           ${vendor.address ? `<span>${escapeHtml(vendor.address)}</span><span>·</span>` : ""}
           ${categoryBadge}
+          ${parentInfo}
         </div>
       </div>
       ${renderLinkButton({ label: "Back to Vendors", href: "/vendors" })}
     </div>
 
-    <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 mb-6">
-      <h2 class="text-lg font-medium mb-4">Assign Category</h2>
-      ${categoryFormHtml}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+      <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6">
+        <h2 class="text-lg font-medium mb-4">Assign Category</h2>
+        ${categoryFormHtml}
+      </div>
+
+      <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6">
+        <h2 class="text-lg font-medium mb-4">Vendor Hierarchy</h2>
+        ${parentFormHtml}
+        ${childVendorsHtml}
+      </div>
     </div>
 
     <div class="flex gap-6 text-sm text-gray-500 dark:text-gray-400 mb-6">

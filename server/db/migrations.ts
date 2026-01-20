@@ -180,6 +180,17 @@ const migrations: Migration[] = [
       ${generateDefaultRulesSQL()}
     `,
   },
+  {
+    version: 7,
+    name: "add_vendor_hierarchy",
+    up: `
+      -- Add parent_vendor_id for vendor hierarchy (tree structure)
+      -- NULL = root vendor, non-NULL = child vendor grouped under parent
+      ALTER TABLE vendors ADD COLUMN parent_vendor_id INTEGER REFERENCES vendors(id) ON DELETE RESTRICT;
+
+      CREATE INDEX idx_vendors_parent ON vendors(parent_vendor_id);
+    `,
+  },
 ];
 
 function ensureMigrationsTable(db: Database.Database): void {

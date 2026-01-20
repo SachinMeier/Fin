@@ -31,3 +31,6 @@ export type { ActionRowOptions } from "./actionRow.js";
 
 export { renderGlobRulesWalkthrough } from "./globRulesWalkthrough.js";
 export type { GlobRulesWalkthroughOptions } from "./globRulesWalkthrough.js";
+
+export { renderVendorGroupingReview, renderGroupingSuggestionsBanner } from "./vendorGroupingReview.js";
+export type { VendorGroupingReviewOptions, GroupingSuggestionDisplay } from "./vendorGroupingReview.js";

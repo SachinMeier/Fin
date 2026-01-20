@@ -5,7 +5,22 @@ import { getDatabase } from "../db/index.js";
 import { UNCATEGORIZED_CATEGORY_ID } from "../db/migrations.js";
 import { parseCsv } from "../csv.js";
 import { applyCategorizationRules } from "../services/categorizationEngine.js";
-import { layout, renderTable, renderStatus, formatCurrency, escapeHtml, renderButton, renderLinkButton, renderCategoryPill, renderUncategorizedPill } from "../templates/index.js";
+import { suggestVendorGroupings, VendorInfo } from "../services/vendorGroupingEngine.js";
+import { getRootVendors } from "../db/vendorQueries.js";
+import {
+  layout,
+  renderTable,
+  renderStatus,
+  formatCurrency,
+  escapeHtml,
+  renderButton,
+  renderLinkButton,
+  renderCategoryPill,
+  renderUncategorizedPill,
+  renderVendorGroupingReview,
+  renderGroupingSuggestionsBanner,
+} from "../templates/index.js";
+import type { GroupingSuggestionDisplay } from "../templates/index.js";
 
 const router = Router();
 const upload = multer({ dest: "uploads/" });
@@ -144,7 +159,7 @@ router.get("/:id", (req, res) => {
   }
 
   const transactions = db.prepare(`
-    SELECT t.*, v.name as vendor_name, v.address as vendor_address, v.category_id, c.name as category_name, c.color as category_color
+    SELECT t.*, v.name as vendor_name, v.address as vendor_address, v.category_id, v.id as vendor_id, c.name as category_name, c.color as category_color
     FROM transactions t
     JOIN vendors v ON t.vendor_id = v.id
     LEFT JOIN categories c ON v.category_id = c.id
@@ -155,6 +170,7 @@ router.get("/:id", (req, res) => {
     reference_number: string;
     date: string;
     amount: number;
+    vendor_id: number;
     vendor_name: string;
     vendor_address: string;
     category_id: number | null;
@@ -164,7 +180,74 @@ router.get("/:id", (req, res) => {
 
   const totalAmount = transactions.reduce((sum, t) => sum + t.amount, 0);
 
-  res.send(renderStatementPage(statement, transactions, totalAmount));
+  // For unconfirmed statements, generate vendor grouping suggestions
+  let groupingSuggestions: GroupingSuggestionDisplay[] = [];
+  if (statement.confirmed_at === null) {
+    // Get unique vendor IDs from this statement
+    const vendorIds = [...new Set(transactions.map((t) => t.vendor_id))];
+
+    // Get vendor info for these vendors
+    const vendors = db
+      .prepare(
+        `SELECT id, name, parent_vendor_id FROM vendors WHERE id IN (${vendorIds.map(() => "?").join(",")})`
+      )
+      .all(...vendorIds) as VendorInfo[];
+
+    // Get existing parent vendors for potential matching
+    const existingParents = getRootVendors();
+
+    // Generate suggestions
+    const suggestions = suggestVendorGroupings(vendors, existingParents);
+
+    // Convert to display format
+    groupingSuggestions = suggestions.map((s, idx) => ({
+      suggestionId: `group_${idx}`,
+      parentName: s.parentName,
+      childVendorIds: s.childVendorIds,
+      childVendorNames: s.childVendorNames,
+      normalizedForm: s.normalizedForm,
+    }));
+  }
+
+  res.send(renderStatementPage(statement, transactions, totalAmount, groupingSuggestions));
+});
+
+// POST /statements/:id/apply-groupings - Apply vendor groupings
+router.post("/:id/apply-groupings", (req, res) => {
+  const db = getDatabase();
+  const statementId = req.params.id;
+
+  db.transaction(() => {
+    // Process each potential grouping
+    let groupIndex = 0;
+    while (req.body[`group_${groupIndex}_vendor_ids`] !== undefined) {
+      const isAccepted = req.body[`accept_group_${groupIndex}`] === "1";
+
+      if (isAccepted) {
+        const vendorIdsStr = req.body[`group_${groupIndex}_vendor_ids`] as string;
+        const parentName = req.body[`group_${groupIndex}_parent_name`] as string;
+        const vendorIds = vendorIdsStr.split(",").map(Number);
+
+        if (vendorIds.length >= 2 && parentName) {
+          // Create a new parent vendor with the canonical name
+          const parentResult = db
+            .prepare("INSERT INTO vendors (name, category_id) VALUES (?, ?)")
+            .run(parentName, UNCATEGORIZED_CATEGORY_ID);
+          const parentId = parentResult.lastInsertRowid;
+
+          // Update child vendors to point to the new parent
+          const placeholders = vendorIds.map(() => "?").join(",");
+          db.prepare(
+            `UPDATE vendors SET parent_vendor_id = ? WHERE id IN (${placeholders})`
+          ).run(parentId, ...vendorIds);
+        }
+      }
+
+      groupIndex++;
+    }
+  })();
+
+  res.redirect(`/statements/${statementId}`);
 });
 
 // POST /statements/:id/confirm - Confirm import
@@ -266,7 +349,8 @@ function renderImportPage(existingAccounts: string[], error?: string): string {
 function renderStatementPage(
   statement: { id: number; period: string; account: string; confirmed_at: string | null },
   transactions: Array<{ id: number; reference_number: string; date: string; amount: number; vendor_name: string; vendor_address: string; category_id: number | null; category_name: string | null; category_color: string | null }>,
-  totalAmount: number
+  totalAmount: number,
+  groupingSuggestions: GroupingSuggestionDisplay[] = []
 ): string {
   const isConfirmed = statement.confirmed_at !== null;
 
@@ -303,6 +387,30 @@ function renderStatementPage(
          ${renderButton({ label: "Cancel", variant: "normal", type: "submit", onclick: "return confirm('Cancel this import?')" })}
        </form>`;
 
+  // Vendor grouping section (only for unconfirmed statements with suggestions)
+  const groupingSection =
+    !isConfirmed && groupingSuggestions.length > 0
+      ? `
+    <div id="vendor-groupings" class="mt-8 pt-6 border-t border-gray-200 dark:border-gray-700">
+      <h2 class="text-lg font-medium mb-4">Suggested Vendor Groupings</h2>
+      <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+        We found vendors that appear to be from the same merchant. Review and apply groupings to organize your vendor list.
+      </p>
+      ${renderVendorGroupingReview({
+        suggestions: groupingSuggestions,
+        formAction: `/statements/${statement.id}/apply-groupings`,
+        showNormalizedForm: false,
+      })}
+    </div>
+  `
+      : "";
+
+  // Banner for grouping suggestions
+  const groupingBanner =
+    !isConfirmed && groupingSuggestions.length > 0
+      ? renderGroupingSuggestionsBanner(groupingSuggestions.length)
+      : "";
+
   const content = `
     <div class="flex items-start justify-between mb-6">
       <div>
@@ -318,12 +426,16 @@ function renderStatementPage(
       </div>
     </div>
 
+    ${groupingBanner}
+
     <div class="flex gap-6 text-sm text-gray-500 dark:text-gray-400 mb-6">
       <span><span class="font-medium text-gray-900 dark:text-gray-100">Transactions:</span> ${transactions.length}</span>
       <span><span class="font-medium text-gray-900 dark:text-gray-100">Total:</span> ${formatCurrency(totalAmount)}</span>
     </div>
 
     ${tableHtml}
+
+    ${groupingSection}
   `;
 
   return layout({ title: "Statement", content, activePath: "/statements" });
