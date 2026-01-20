@@ -253,7 +253,11 @@ function renderVendorsListPage(
   });
 
   const content = `
-    <h1 class="text-2xl font-semibold mb-6">Vendors</h1>
+    <h1 class="text-2xl font-semibold mb-2">Vendors</h1>
+    <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
+      A list of all the vendors you've transacted with across all statements. Deduplication is still a Work in Progress.
+      You can manually categorize these vendors or use <a href="/rules" class="underline hover:text-gray-700 dark:hover:text-gray-300">Rules</a> to do so programmatically.
+    </p>
     ${filterHtml}
     ${tableHtml}
   `;

@@ -23,10 +23,11 @@ export const DEFAULT_PATTERN_RULES: Array<{
   categoryName: string;
 }> = [
   { pattern: "*AMAZON*", categoryName: "Shopping" },
+  { pattern: "*{UBER EATS,DOORDASH,GRUBHUB}*", categoryName: "Food Delivery" },
   { pattern: "*{LYFT,UBER,WAYMO}*", categoryName: "Rideshare" },
   { pattern: "*{AIRLINE,JETBLUE,SOUTHWEST}*", categoryName: "Airfare" },
   { pattern: "*{UNITED.COM,AA.COM,DELTA.COM}*", categoryName: "Airfare" },
-  { pattern: "*LIQUOR*", categoryName: "Bars" },
+  { pattern: "*LIQUOR*", categoryName: "Bars & Clubs" },
   { pattern: "*{FITNESS,EQUINOX,GYM}*", categoryName: "Gym" },
   { pattern: "*{CLIPPER,MTA,MBTA,SEPTA}*", categoryName: "Public Transit" },
 ];

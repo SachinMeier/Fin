@@ -57,9 +57,9 @@ const defaultCategories: DefaultCategory[] = [
   { name: "Food & Drink", parent: "Expenses", color: "#F97316" },
   { name: "Groceries", parent: "Food & Drink", color: "#EA580C" },
   { name: "Restaurants", parent: "Food & Drink", color: "#C2410C" },
-  { name: "Coffee Shops", parent: "Food & Drink", color: "#9A3412" },
-  { name: "Bars", parent: "Food & Drink", color: "#7C2D12" },
-  { name: "Delivery", parent: "Food & Drink", color: "#FB923C" },
+  { name: "Cafes", parent: "Food & Drink", color: "#9A3412" },
+  { name: "Bars & Clubs", parent: "Food & Drink", color: "#7C2D12" },
+  { name: "Food Delivery", parent: "Food & Drink", color: "#FB923C" },
 
   // Expenses > Transportation
   { name: "Transportation", parent: "Expenses", color: "#3B82F6" },
