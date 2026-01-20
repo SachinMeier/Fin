@@ -112,6 +112,14 @@ function renderGlobSyntaxSection(): string {
             <td class="py-2"><code class="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded font-mono">[abc]</code></td>
             <td class="py-2">Matches any single character in the brackets. Supports ranges like <code class="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">[0-9]</code> or <code class="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">[A-Z]</code>.</td>
           </tr>
+          <tr>
+            <td class="py-2"><code class="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded font-mono">\\*</code></td>
+            <td class="py-2">Matches a literal asterisk character. Use when vendor names contain <code class="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">*</code> (e.g., "TST*").</td>
+          </tr>
+          <tr>
+            <td class="py-2"><code class="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded font-mono">\\?</code></td>
+            <td class="py-2">Matches a literal question mark character.</td>
+          </tr>
         </tbody>
       </table>
       <p class="mt-3 text-xs text-gray-500 dark:text-gray-500">
@@ -128,6 +136,7 @@ function renderExamplesSection(): string {
     { pattern: "*AMAZON*", matches: "AMAZON.COM, AMAZON PRIME, MY AMAZON ORDER" },
     { pattern: "UBER?EATS", matches: "UBER EATS, UBER-EATS (but not UBEREATS)" },
     { pattern: "NETFLIX*", matches: "NETFLIX, NETFLIX.COM, NETFLIX INC" },
+    { pattern: "TST\\**", matches: "TST*BURGER KING, TST*STARBUCKS (literal * in name)" },
   ];
 
   const exampleRows = examples

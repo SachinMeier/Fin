@@ -30,6 +30,7 @@ export const DEFAULT_PATTERN_RULES: Array<{
   { pattern: "*LIQUOR*", categoryName: "Bars & Clubs" },
   { pattern: "*{FITNESS,EQUINOX,GYM}*", categoryName: "Gym" },
   { pattern: "*{CLIPPER,MTA,MBTA,SEPTA}*", categoryName: "Public Transit" },
+  { pattern: "TST\\**", categoryName: "Food & Drink" },
 ];
 
 /** Generate SQL for inserting default pattern rules (looks up category by name) */

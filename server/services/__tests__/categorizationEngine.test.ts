@@ -242,6 +242,54 @@ describe("globToRegex", () => {
     });
   });
 
+  describe("escaped glob wildcards (literal * and ?)", () => {
+    it("matches literal asterisk with \\*", () => {
+      const regex = globToRegex("TST\\*");
+      expect(regex.test("TST*")).toBe(true);
+      expect(regex.test("TST")).toBe(false);
+      expect(regex.test("TSTX")).toBe(false);
+    });
+
+    it("matches TST* prefix pattern (literal asterisk followed by wildcard)", () => {
+      // Pattern: TST\** means "TST" + literal "*" + any characters
+      const regex = globToRegex("TST\\**");
+      expect(regex.test("TST*BURGER KING")).toBe(true);
+      expect(regex.test("TST*STARBUCKS #123")).toBe(true);
+      expect(regex.test("TST*")).toBe(true);
+      expect(regex.test("TST BURGER KING")).toBe(false);
+      expect(regex.test("TSTBURGER")).toBe(false);
+    });
+
+    it("matches literal question mark with \\?", () => {
+      const regex = globToRegex("WHAT\\?");
+      expect(regex.test("WHAT?")).toBe(true);
+      expect(regex.test("WHATX")).toBe(false);
+      expect(regex.test("WHAT")).toBe(false);
+    });
+
+    it("combines escaped and unescaped wildcards", () => {
+      // Pattern: A\*B* means "A" + literal "*" + "B" + any characters
+      const regex = globToRegex("A\\*B*");
+      expect(regex.test("A*B")).toBe(true);
+      expect(regex.test("A*BXYZ")).toBe(true);
+      expect(regex.test("AXB")).toBe(false);
+      expect(regex.test("AB")).toBe(false);
+    });
+
+    it("escapes multiple asterisks", () => {
+      const regex = globToRegex("\\*\\*\\*");
+      expect(regex.test("***")).toBe(true);
+      expect(regex.test("**")).toBe(false);
+      expect(regex.test("ABC")).toBe(false);
+    });
+
+    it("handles backslash at end of pattern", () => {
+      // Trailing backslash without following char is kept as literal backslash
+      const regex = globToRegex("TEST\\");
+      expect(regex.test("TEST\\")).toBe(true);
+    });
+  });
+
   describe("full match requirement", () => {
     it("requires pattern to match entire string", () => {
       const regex = globToRegex("STAR");
@@ -372,6 +420,18 @@ describe("matchesPattern", () => {
   it("handles invalid regex gracefully", () => {
     // Unclosed bracket should not throw
     expect(matchesPattern("TEST", "[abc")).toBe(false);
+  });
+
+  it("matches TST* vendor names with escaped asterisk pattern", () => {
+    // TST* is a common bank statement prefix for food/restaurant transactions
+    // The pattern TST\** matches literal "TST*" followed by anything
+    expect(matchesPattern("TST*BURGER KING", "TST\\**")).toBe(true);
+    expect(matchesPattern("TST*MCDONALD'S #12345", "TST\\**")).toBe(true);
+    expect(matchesPattern("TST*STARBUCKS", "TST\\**")).toBe(true);
+    expect(matchesPattern("TST*", "TST\\**")).toBe(true);
+    // Should NOT match without the literal asterisk
+    expect(matchesPattern("TST BURGER KING", "TST\\**")).toBe(false);
+    expect(matchesPattern("TSTBURGER KING", "TST\\**")).toBe(false);
   });
 });
 
