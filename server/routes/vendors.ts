@@ -284,6 +284,7 @@ router.post("/:id/reparent", (req, res) => {
 
   // If removing from a parent, check if old parent should be auto-deleted
   // (when it has no remaining children and no transactions of its own)
+  let oldParentDeleted = false;
   if (oldParentId !== null && oldParentId !== parentVendorId) {
     const childCount = db
       .prepare("SELECT COUNT(*) as cnt FROM vendors WHERE parent_vendor_id = ?")
@@ -296,11 +297,17 @@ router.post("/:id/reparent", (req, res) => {
 
       if (transactionCount.cnt === 0) {
         db.prepare("DELETE FROM vendors WHERE id = ?").run(oldParentId);
+        oldParentDeleted = true;
       }
     }
   }
 
-  res.redirect(`/vendors/${vendorId}`);
+  // When removing from a parent, redirect to the parent (unless it was deleted)
+  if (oldParentId !== null && parentVendorId === null && !oldParentDeleted) {
+    res.redirect(`/vendors/${oldParentId}`);
+  } else {
+    res.redirect(`/vendors/${vendorId}`);
+  }
 });
 
 // POST /vendors/bulk-categorize - Assign category to multiple vendors
