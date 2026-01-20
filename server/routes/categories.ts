@@ -100,6 +100,11 @@ const defaultCategories: DefaultCategory[] = [
   { name: "Gym", parent: "Health", color: "#D13555" },
   { name: "Other (Health)", parent: "Health", color: "#C9224A" },
 
+  // Expenses > Productivity - Sky blue family
+  { name: "Productivity", parent: "Expenses", color: "#38BDF8" },
+  { name: "Subscriptions (Productivity)", parent: "Productivity", color: "#0EA5E9" },
+  { name: "Other (Productivity)", parent: "Productivity", color: "#0284C7" },
+
   // Transfers children - Light violet shades (avoiding grays)
   { name: "Tax Returns", parent: "Transfers", color: "#8B5CF6" },
   { name: "Payments", parent: "Transfers", color: "#7C3AED" },
