@@ -1,6 +1,7 @@
 import express from "express";
 import { initializeDatabase, closeDatabase } from "./db/index.js";
 import statementsRouter from "./routes/statements.js";
+import analysisRouter from "./routes/analysis.js";
 import categoriesRouter from "./routes/categories.js";
 import vendorsRouter from "./routes/vendors.js";
 import rulesRouter from "./routes/rules.js";
@@ -17,6 +18,7 @@ app.get("/", (_req, res) => {
 });
 
 app.use("/statements", statementsRouter);
+app.use("/statements", analysisRouter);
 app.use("/categories", categoriesRouter);
 app.use("/vendors", vendorsRouter);
 app.use("/rules", rulesRouter);

@@ -387,11 +387,27 @@ function renderStatementPage(
     emptyMessage: "No transactions in this statement.",
   });
 
+  const analysisButton = renderLinkButton({
+    label: "Analysis",
+    href: `/statements/${statement.id}/analysis`,
+    variant: "normal",
+  });
+
+  const sankeyButton = renderLinkButton({
+    label: "Sankey",
+    href: `/statements/${statement.id}/sankey`,
+    variant: "normal",
+  });
+
   const actionButtons = isConfirmed
-    ? `<form method="POST" action="/statements/${statement.id}/delete" class="inline">
+    ? `${analysisButton}
+       ${sankeyButton}
+       <form method="POST" action="/statements/${statement.id}/delete" class="inline">
          ${renderButton({ label: "Delete Statement", variant: "danger", type: "submit", onclick: "return confirm('Delete this statement?')" })}
        </form>`
-    : `<form method="POST" action="/statements/${statement.id}/confirm" class="inline">
+    : `${analysisButton}
+       ${sankeyButton}
+       <form method="POST" action="/statements/${statement.id}/confirm" class="inline">
          ${renderButton({ label: "Confirm Import", variant: "proceed", type: "submit" })}
        </form>
        <form method="POST" action="/statements/${statement.id}/delete" class="inline">
@@ -477,6 +493,12 @@ function renderStatementsListPage(statements: Array<StatementRow>): string {
         key: "confirmed_at",
         label: "Status",
         render: (value) => renderStatus(value !== null),
+      },
+      {
+        key: "id",
+        label: "",
+        render: (_value, row) =>
+          `<span onclick="event.stopPropagation()" class="flex gap-2">${renderLinkButton({ label: "Analysis", href: `/statements/${row.id}/analysis`, variant: "proceed" })}${renderLinkButton({ label: "Sankey", href: `/statements/${row.id}/sankey`, variant: "normal" })}</span>`,
       },
     ],
     rows: statements,

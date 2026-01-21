@@ -34,3 +34,18 @@ export type { GlobRulesWalkthroughOptions } from "./globRulesWalkthrough.js";
 
 export { renderVendorGroupingReview, renderGroupingSuggestionsBanner } from "./vendorGroupingReview.js";
 export type { VendorGroupingReviewOptions, GroupingSuggestionDisplay } from "./vendorGroupingReview.js";
+
+export { renderPieChart, renderAnalysisSummary } from "./pieChart.js";
+export type { PieSlice, PieChartOptions } from "./pieChart.js";
+
+export { renderAnalysisBreadcrumbs } from "./analysisBreadcrumbs.js";
+export type { BreadcrumbItem, AnalysisBreadcrumbsOptions } from "./analysisBreadcrumbs.js";
+
+export { renderAnalysisPage, renderEmptyAnalysis } from "./analysisPage.js";
+export type { AnalysisPageOptions } from "./analysisPage.js";
+
+export { renderSankeyChart } from "./sankeyChart.js";
+export type { SankeyNode, SankeyChartOptions } from "./sankeyChart.js";
+
+export { renderSankeyPage, renderEmptySankeyPage } from "./sankeyPage.js";
+export type { SankeyPageOptions } from "./sankeyPage.js";

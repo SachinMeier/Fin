@@ -115,6 +115,8 @@ export interface InlineCategorySelectOptions {
   currentCategoryColor: string | null;
   /** All available categories */
   categories: CategoryOption[];
+  /** Optional return path after category selection (defaults to "list") */
+  returnPath?: string;
 }
 
 /**
@@ -128,6 +130,7 @@ export function renderInlineCategorySelect({
   currentCategoryName,
   currentCategoryColor,
   categories,
+  returnPath = "list",
 }: InlineCategorySelectOptions): string {
   const categoryOptions = categories
     .map((c) => {
@@ -172,7 +175,7 @@ export function renderInlineCategorySelect({
           ${categoryOptions}
         </select>
       </div>
-      <input type="hidden" name="return_to" value="list" />
+      <input type="hidden" name="return_to" value="${escapeHtml(returnPath)}" />
     </form>
   `;
 }

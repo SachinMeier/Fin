@@ -25,7 +25,7 @@ export const DEFAULT_PATTERN_RULES: Array<{
   { pattern: "*AMAZON*", categoryName: "Shopping" },
   { pattern: "*{UBER EATS,DOORDASH,GRUBHUB}*", categoryName: "Food Delivery" },
   { pattern: "*{LYFT,UBER,WAYMO}*", categoryName: "Rideshare" },
-  { pattern: "*{AIRLINE,JETBLUE,SOUTHWEST}*", categoryName: "Airfare" },
+  { pattern: "*{AIRLINE,JETBLUE,SOUTHWEST,DELTA}*", categoryName: "Airfare" },
   { pattern: "*{UNITED.COM,AA.COM,DELTA.COM}*", categoryName: "Airfare" },
   { pattern: "*LIQUOR*", categoryName: "Bars & Clubs" },
   { pattern: "*{FITNESS,EQUINOX,GYM}*", categoryName: "Gym" },

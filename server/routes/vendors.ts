@@ -279,6 +279,9 @@ router.post("/:id/categorize", (req, res) => {
     res.redirect("/vendors?category=uncategorized");
   } else if (returnTo === "list") {
     res.redirect("/vendors");
+  } else if (returnTo && returnTo.startsWith("/")) {
+    // Allow arbitrary paths that start with / (e.g., analysis pages)
+    res.redirect(returnTo);
   } else {
     res.redirect(`/vendors/${vendorId}`);
   }
@@ -430,6 +433,54 @@ router.post("/group", (req, res) => {
   })();
 
   res.redirect("/vendors");
+});
+
+// POST /vendors/merge - Merge two vendor groups into one
+router.post("/merge", (req, res) => {
+  const db = getDatabase();
+  const keepParentId = Number(req.body.keep_parent_id);
+  const mergeParentId = Number(req.body.merge_parent_id);
+
+  if (!keepParentId || !mergeParentId || keepParentId === mergeParentId) {
+    res.status(400).send("Invalid merge request");
+    return;
+  }
+
+  db.transaction(() => {
+    // Get the category of the parent we're keeping
+    const keepParent = db
+      .prepare("SELECT category_id FROM vendors WHERE id = ?")
+      .get(keepParentId) as { category_id: number } | undefined;
+
+    if (!keepParent) {
+      throw new Error("Keep parent not found");
+    }
+
+    const keepCategoryId = keepParent.category_id;
+
+    // Move all children of the merge parent to the keep parent
+    // and update their category to match the new parent
+    db.prepare(
+      "UPDATE vendors SET parent_vendor_id = ?, category_id = ? WHERE parent_vendor_id = ?"
+    ).run(keepParentId, keepCategoryId, mergeParentId);
+
+    // Check if the merge parent has any transactions of its own
+    const mergeParentTransactions = db
+      .prepare("SELECT COUNT(*) as cnt FROM transactions WHERE vendor_id = ?")
+      .get(mergeParentId) as { cnt: number };
+
+    if (mergeParentTransactions.cnt > 0) {
+      // The merge parent has transactions, so convert it to a child of keep parent
+      db.prepare(
+        "UPDATE vendors SET parent_vendor_id = ?, category_id = ? WHERE id = ?"
+      ).run(keepParentId, keepCategoryId, mergeParentId);
+    } else {
+      // The merge parent has no transactions, delete it
+      db.prepare("DELETE FROM vendors WHERE id = ?").run(mergeParentId);
+    }
+  })();
+
+  res.redirect(`/vendors/${keepParentId}`);
 });
 
 // POST /vendors/suggest-groupings - Analyze all vendors and show grouping suggestions
@@ -626,17 +677,17 @@ function renderVendorsListPage(
           categories: inlineSelectCategories,
         });
 
-        // Draggable: root vendors without children can be dragged to become children
-        const canBeDragged = v.parent_vendor_id === null && !hasChildren;
+        // Draggable: root vendors (with or without children) can be dragged
+        const canBeDragged = v.parent_vendor_id === null;
         // Droppable: root vendors (with or without children) can accept new children
         const canAcceptChild = v.parent_vendor_id === null;
         // Is this vendor an orphan (root with no children) or a parent (root with children)?
         const isOrphan = v.parent_vendor_id === null && !hasChildren;
         const dragAttrs = canBeDragged
-          ? `draggable="true" data-vendor-id="${v.id}" data-vendor-name="${escapeHtml(v.name).replace(/"/g, "&quot;")}"`
+          ? `draggable="true" data-vendor-id="${v.id}" data-vendor-name="${escapeHtml(v.name).replace(/"/g, "&quot;")}" data-has-children="${hasChildren}"`
           : "";
         const dropAttrs = canAcceptChild
-          ? `data-drop-target="true" data-parent-id="${v.id}" data-parent-name="${escapeHtml(v.name).replace(/"/g, "&quot;")}" data-is-orphan="${isOrphan}"`
+          ? `data-drop-target="true" data-parent-id="${v.id}" data-parent-name="${escapeHtml(v.name).replace(/"/g, "&quot;")}" data-is-orphan="${isOrphan}" data-has-children="${hasChildren}"`
           : "";
 
         // Collapse/expand toggle for parent vendors
@@ -792,6 +843,44 @@ function renderVendorsListPage(
     </div>
   `;
 
+  // Modal for merging two parent vendor groups
+  const mergeGroupsModalHtml = `
+    <div id="mergeGroupsModal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+      <div class="flex items-center justify-center min-h-screen px-4">
+        <div class="fixed inset-0 bg-black/30 dark:bg-black/50" onclick="hideMergeGroupsModal()"></div>
+        <div class="relative bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 max-w-md w-full shadow-lg">
+          <h3 class="text-lg font-medium mb-2">Merge Vendor Groups</h3>
+          <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+            Merge <span id="mergeGroupVendor1" class="font-medium text-gray-900 dark:text-gray-100"></span> and <span id="mergeGroupVendor2" class="font-medium text-gray-900 dark:text-gray-100"></span> into a single vendor group.
+          </p>
+          <form id="mergeGroupsForm" method="POST" action="/vendors/merge">
+            <input type="hidden" name="merge_parent_id" id="mergeGroupMergeId" value="">
+            <div class="space-y-4 mb-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="mergeGroupKeepParent">Keep which parent?</label>
+                <select id="mergeGroupKeepParent" name="keep_parent_id" required class="${inputClasses}">
+                  <option value="" id="mergeGroupOption1"></option>
+                  <option value="" id="mergeGroupOption2"></option>
+                </select>
+              </div>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                All vendors from the other group will be moved into the selected parent. The moved vendors will inherit the selected parent's category.
+              </p>
+            </div>
+            <div class="flex gap-2 justify-end">
+              <button type="button" onclick="hideMergeGroupsModal()" class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors">
+                Cancel
+              </button>
+              <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
+                Merge Groups
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  `;
+
   // JavaScript for handling vendor selection, grouping, and drag-drop
   const scriptHtml = `
     <script>
@@ -867,11 +956,13 @@ function renderVendorsListPage(
         var dropTargets = document.querySelectorAll('tr[data-drop-target="true"]');
         var draggedVendorId = null;
         var draggedVendorName = null;
+        var draggedHasChildren = false;
 
         draggableRows.forEach(function(row) {
           row.addEventListener('dragstart', function(e) {
             draggedVendorId = row.dataset.vendorId;
             draggedVendorName = row.dataset.vendorName;
+            draggedHasChildren = row.dataset.hasChildren === 'true';
             row.classList.add('opacity-50');
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('text/plain', draggedVendorId);
@@ -881,6 +972,7 @@ function renderVendorsListPage(
             row.classList.remove('opacity-50');
             draggedVendorId = null;
             draggedVendorName = null;
+            draggedHasChildren = false;
             // Remove all drop highlights
             dropTargets.forEach(function(target) {
               target.classList.remove('bg-green-50', 'dark:bg-green-900/20', 'ring-2', 'ring-green-500', 'ring-inset');
@@ -914,11 +1006,18 @@ function renderVendorsListPage(
               return;
             }
 
-            // Check if target is an orphan (no children) - if so, show create group modal
-            // Otherwise, show add child modal (adding to existing parent)
-            if (target.dataset.isOrphan === 'true') {
+            var targetHasChildren = target.dataset.hasChildren === 'true';
+
+            // Both have children: merge groups
+            if (draggedHasChildren && targetHasChildren) {
+              showMergeGroupsModal(draggedVendorId, draggedVendorName, target.dataset.parentId, target.dataset.parentName);
+            }
+            // Target is orphan (no children) and dragged is also orphan: create new group
+            else if (target.dataset.isOrphan === 'true' && !draggedHasChildren) {
               showCreateGroupModal(draggedVendorId, draggedVendorName, target.dataset.parentId, target.dataset.parentName);
-            } else {
+            }
+            // Otherwise: add as child to existing parent
+            else {
               showAddChildModal(draggedVendorId, draggedVendorName, target.dataset.parentId, target.dataset.parentName);
             }
           });
@@ -954,6 +1053,52 @@ function renderVendorsListPage(
       function hideCreateGroupModal() {
         document.getElementById('createGroupModal').classList.add('hidden');
       }
+
+      // Modal functions for merging two parent vendor groups
+      var mergeVendor1Id = null;
+      var mergeVendor1Name = null;
+      var mergeVendor2Id = null;
+      var mergeVendor2Name = null;
+
+      function showMergeGroupsModal(vendor1Id, vendor1Name, vendor2Id, vendor2Name) {
+        mergeVendor1Id = vendor1Id;
+        mergeVendor1Name = vendor1Name;
+        mergeVendor2Id = vendor2Id;
+        mergeVendor2Name = vendor2Name;
+
+        document.getElementById('mergeGroupVendor1').textContent = vendor1Name;
+        document.getElementById('mergeGroupVendor2').textContent = vendor2Name;
+
+        // Set up the dropdown options
+        var option1 = document.getElementById('mergeGroupOption1');
+        var option2 = document.getElementById('mergeGroupOption2');
+        option1.value = vendor1Id;
+        option1.textContent = vendor1Name;
+        option2.value = vendor2Id;
+        option2.textContent = vendor2Name;
+
+        // Select the first option by default and update the hidden field
+        var select = document.getElementById('mergeGroupKeepParent');
+        select.value = vendor1Id;
+        updateMergeHiddenField();
+
+        document.getElementById('mergeGroupsModal').classList.remove('hidden');
+      }
+
+      function hideMergeGroupsModal() {
+        document.getElementById('mergeGroupsModal').classList.add('hidden');
+      }
+
+      function updateMergeHiddenField() {
+        var select = document.getElementById('mergeGroupKeepParent');
+        var keepId = select.value;
+        // The merge_parent_id is the one NOT selected (the one being merged into the other)
+        var mergeId = (keepId === mergeVendor1Id) ? mergeVendor2Id : mergeVendor1Id;
+        document.getElementById('mergeGroupMergeId').value = mergeId;
+      }
+
+      // Add change listener to the dropdown
+      document.getElementById('mergeGroupKeepParent').addEventListener('change', updateMergeHiddenField);
 
       // ===============================
       // Parent vendor collapse/expand functionality
@@ -1013,6 +1158,7 @@ function renderVendorsListPage(
     ${groupFormHtml}
     ${addChildModalHtml}
     ${createGroupModalHtml}
+    ${mergeGroupsModalHtml}
     ${scriptHtml}
   `;
 
