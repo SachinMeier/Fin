@@ -447,8 +447,8 @@ router.post("/suggest-groupings", (_req, res) => {
   // Get parents that already have children (for sibling matching)
   const parentsWithChildren = getParentVendorsWithChildren();
 
-  // Generate suggestions
-  const suggestions = suggestVendorGroupings(vendors, existingParents, parentsWithChildren);
+  // Generate suggestions (enable debug logging for inspection)
+  const suggestions = suggestVendorGroupings(vendors, existingParents, parentsWithChildren, { debug: true });
 
   // Convert to display format
   const groupingSuggestions: GroupingSuggestionDisplay[] = suggestions.map((s, idx) => ({
@@ -479,7 +479,7 @@ router.post("/apply-groupings", (req, res) => {
         const parentName = req.body[`group_${groupIndex}_parent_name`] as string;
         const vendorIds = vendorIdsStr.split(",").map(Number);
 
-        if (vendorIds.length >= 2 && parentName) {
+        if (parentName) {
           // Check if a vendor with this name already exists
           const existingVendor = db
             .prepare("SELECT id, category_id FROM vendors WHERE name = ?")

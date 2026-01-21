@@ -6,6 +6,7 @@ import {
   suggestVendorGroupings,
   createCanonicalName,
   shouldGroupVendors,
+  extractFirstWord,
   VendorInfo,
   ParentWithChildrenInfo,
 } from "../vendorGroupingEngine.js";
@@ -245,13 +246,15 @@ describe("shouldGroupVendors", () => {
 
     it("does not group merchants with different base names", () => {
       // UBER EATS vs UBER RIDE - both normalize to different strings
-      // LCP("uber eats", "uber ride") = "uber " which is 5/9 = 0.55 < 0.8
+      // LCP("uber eats", "uber ride") = "uber " which is 5/9 = 0.55 < 0.6
       // So they are NOT grouped (correctly - they are different services)
       expect(shouldGroupVendors("UBER EATS", "UBER RIDE")).toBe(false);
       expect(shouldGroupVendors("UBER EATS", "LYFT")).toBe(false);
-      // CHASE BANK vs CHASE CARD - LCP is "chase " = 6/10 = 0.6 < 0.8
-      expect(shouldGroupVendors("CHASE BANK", "CHASE CARD")).toBe(false);
+      // CHASE BANK vs CHASE CARD - LCP is "chase " = 6/10 = 0.6 which equals threshold
+      // With 0.6 threshold, these DO match (borderline case)
+      // To test non-matching, we need names with lower similarity
       expect(shouldGroupVendors("CHASE BANK", "WELLS FARGO")).toBe(false);
+      expect(shouldGroupVendors("FIRST BANK", "SECOND BANK")).toBe(false);
     });
   });
 
@@ -664,23 +667,22 @@ describe("suggestVendorGroupings", () => {
   });
 
   it("uses custom similarity threshold", () => {
-    // STARBUCKS COFFEE normalizes to "starbucks coffee"
-    // STARBUCKS TEA normalizes to "starbucks tea"
-    // These have different normalized forms, so they rely on LCP similarity
-    // LCP is "starbucks " = 10 chars, min is 13 (starbucks tea)
-    // similarity = 10/13 = 0.77 < 0.8, so NOT grouped by default
+    // STAR COFFEE normalizes to "star coffee" (11 chars)
+    // STAR PASTRIES normalizes to "star pastries" (13 chars)
+    // LCP is "star " = 5 chars
+    // similarity = 5/11 = 0.45 < 0.6, so NOT grouped by default
     const vendors: VendorInfo[] = [
-      { id: 1, name: "STARBUCKS COFFEE", parent_vendor_id: null },
-      { id: 2, name: "STARBUCKS TEA", parent_vendor_id: null },
+      { id: 1, name: "STAR COFFEE", parent_vendor_id: null },
+      { id: 2, name: "STAR PASTRIES", parent_vendor_id: null },
     ];
 
-    // With default 0.8 threshold - not grouped (0.77 < 0.8)
+    // With default 0.6 threshold - not grouped (0.45 < 0.6)
     const defaultSuggestions = suggestVendorGroupings(vendors);
     expect(defaultSuggestions).toHaveLength(0);
 
-    // With looser 0.7 threshold - should group
+    // With looser 0.4 threshold - should group
     const looseSuggestions = suggestVendorGroupings(vendors, [], [], {
-      similarityThreshold: 0.7,
+      similarityThreshold: 0.4,
     });
     expect(looseSuggestions).toHaveLength(1);
   });
@@ -809,5 +811,232 @@ describe("Comprehensive Grouping Examples", () => {
       // But with same location suffix:
       expect(shouldGroupVendors("TARGET 12345 MINNEAPOLIS", "TARGET 67890 MINNEAPOLIS")).toBe(true);
     });
+  });
+});
+
+// ============================================================================
+// Parent Merging Tests - Ensure similar parent suggestions are consolidated
+// ============================================================================
+
+describe("Parent Merging", () => {
+  describe("merges similar parent suggestions", () => {
+    it("merges AMAZON variants with transaction IDs into single parent", () => {
+      // Realistic bank statement vendor names - all normalize to "amazon"
+      const vendors: VendorInfo[] = [
+        { id: 1, name: "AMAZON*1234ABC", parent_vendor_id: null },
+        { id: 2, name: "AMAZON*5678XYZ", parent_vendor_id: null },
+        { id: 3, name: "AMAZON*9999DEF", parent_vendor_id: null },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors);
+
+      // All normalize to "amazon" so should create ONE group via exact match
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].childVendorIds).toHaveLength(3);
+      expect(suggestions[0].normalizedForm).toBe("amazon");
+    });
+
+    it("merges parent suggestions with similar normalized forms", () => {
+      // Test the parent merging logic with vendors that would create separate groups
+      // via LCP matching but should be merged because parent names are similar
+      const vendors: VendorInfo[] = [
+        // These pairs each match with each other via LCP
+        { id: 1, name: "STARBUCKS DOWNTOWN", parent_vendor_id: null },
+        { id: 2, name: "STARBUCKS DOWNTOWN 123", parent_vendor_id: null },
+        { id: 3, name: "STARBUCKS UPTOWN", parent_vendor_id: null },
+        { id: 4, name: "STARBUCKS UPTOWN 456", parent_vendor_id: null },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors);
+
+      // The parent names "Starbucks Downtown" and "Starbucks Uptown" should be merged
+      // into a single "Starbucks" parent
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].childVendorIds).toHaveLength(4);
+      expect(suggestions[0].parentName.toLowerCase()).toBe("starbucks");
+    });
+
+    it("does not merge dissimilar parents", () => {
+      const vendors: VendorInfo[] = [
+        { id: 1, name: "AMAZON*123", parent_vendor_id: null },
+        { id: 2, name: "AMAZON*456", parent_vendor_id: null },
+        { id: 3, name: "STARBUCKS #789", parent_vendor_id: null },
+        { id: 4, name: "STARBUCKS #111", parent_vendor_id: null },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors);
+
+      // Should create TWO separate parent groups
+      expect(suggestions).toHaveLength(2);
+
+      const amazonGroup = suggestions.find((s) => s.normalizedForm === "amazon");
+      const starbucksGroup = suggestions.find((s) => s.normalizedForm === "starbucks");
+
+      expect(amazonGroup).toBeDefined();
+      expect(amazonGroup?.childVendorIds).toHaveLength(2);
+
+      expect(starbucksGroup).toBeDefined();
+      expect(starbucksGroup?.childVendorIds).toHaveLength(2);
+    });
+
+    it("preserves existing parent suggestions without merging", () => {
+      const vendors: VendorInfo[] = [
+        { id: 10, name: "AMAZON*NEW123", parent_vendor_id: null },
+      ];
+
+      const parentsWithChildren: ParentWithChildrenInfo[] = [
+        {
+          parent: { id: 100, name: "Amazon", parent_vendor_id: null },
+          children: [{ id: 1, name: "AMAZON*OLD456", parent_vendor_id: 100 }],
+        },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors, [], parentsWithChildren);
+
+      // Should suggest adding to existing parent "Amazon"
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].parentName).toBe("Amazon");
+      expect(suggestions[0].childVendorIds).toEqual([10]);
+    });
+  });
+
+  describe("single-child prevention", () => {
+    it("does not create new groups with only one child", () => {
+      const vendors: VendorInfo[] = [
+        { id: 1, name: "UNIQUE VENDOR 123", parent_vendor_id: null },
+        { id: 2, name: "ANOTHER UNIQUE 456", parent_vendor_id: null },
+        { id: 3, name: "YET ANOTHER 789", parent_vendor_id: null },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors);
+
+      // All vendors are unique, so no groups should be created
+      expect(suggestions).toHaveLength(0);
+    });
+
+    it("allows single child when adding to existing parent", () => {
+      const vendors: VendorInfo[] = [
+        { id: 10, name: "STARBUCKS NEW 123", parent_vendor_id: null },
+      ];
+
+      const parentsWithChildren: ParentWithChildrenInfo[] = [
+        {
+          parent: { id: 100, name: "Starbucks", parent_vendor_id: null },
+          children: [{ id: 1, name: "STARBUCKS OLD 456", parent_vendor_id: 100 }],
+        },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors, [], parentsWithChildren);
+
+      // Should allow adding single child to existing parent
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].parentName).toBe("Starbucks");
+      expect(suggestions[0].childVendorIds).toEqual([10]);
+    });
+  });
+
+  describe("reciprocal suggestion prevention", () => {
+    it("does not create reciprocal suggestions when vendors are in both lists", () => {
+      // This tests the bug where vendors in both the 'vendors' and 'existingParents' lists
+      // would create A->B and B->A suggestions
+      const vendors: VendorInfo[] = [
+        { id: 1, name: "AMAZON RETA* BZ85Z1BD0 WWW.AMAZON.COWA", parent_vendor_id: null },
+        { id: 2, name: "AMAZON RETA* Z89LX6LJ3 WWW.AMAZON.COWA", parent_vendor_id: null },
+      ];
+
+      // Same vendors as existingParents (simulating real-world scenario)
+      const existingParents: VendorInfo[] = [...vendors];
+
+      const suggestions = suggestVendorGroupings(vendors, existingParents);
+
+      // Should create ONE group, not reciprocal suggestions
+      expect(suggestions).toHaveLength(1);
+      // Both vendors should be in the same group
+      expect(suggestions[0].childVendorIds).toContain(1);
+      expect(suggestions[0].childVendorIds).toContain(2);
+    });
+  });
+
+  describe("real-world vendor data", () => {
+    it("groups Amazon RETA variants together", () => {
+      const vendors: VendorInfo[] = [
+        { id: 1, name: "AMAZON RETA* BZ85Z1BD0 WWW.AMAZON.COWA", parent_vendor_id: null },
+        { id: 2, name: "AMAZON RETA* Z89LX6LJ3 WWW.AMAZON.COWA", parent_vendor_id: null },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors);
+
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].childVendorIds).toHaveLength(2);
+    });
+
+    it("groups Amazon MKTPL variants together", () => {
+      const vendors: VendorInfo[] = [
+        { id: 1, name: "AMAZON MKTPL*B03LG8ZI0 Amzn.com/billWA", parent_vendor_id: null },
+        { id: 2, name: "AMAZON MKTPL*Q26039IL3 Amzn.com/billWA", parent_vendor_id: null },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors);
+
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].childVendorIds).toHaveLength(2);
+    });
+
+    it("merges Amazon RETA and Amazon MKTPL into single Amazon parent", () => {
+      const vendors: VendorInfo[] = [
+        { id: 1, name: "AMAZON RETA* BZ85Z1BD0 WWW.AMAZON.COWA", parent_vendor_id: null },
+        { id: 2, name: "AMAZON RETA* Z89LX6LJ3 WWW.AMAZON.COWA", parent_vendor_id: null },
+        { id: 3, name: "AMAZON MKTPL*B03LG8ZI0 Amzn.com/billWA", parent_vendor_id: null },
+        { id: 4, name: "AMAZON MKTPL*Q26039IL3 Amzn.com/billWA", parent_vendor_id: null },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors);
+
+      // Should merge all Amazon variants into ONE parent group
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].parentName.toLowerCase()).toBe("amazon");
+      expect(suggestions[0].childVendorIds).toHaveLength(4);
+    });
+
+    it("handles Uber variants with existing Uber parent", () => {
+      const vendors: VendorInfo[] = [
+        { id: 1, name: "UBER *LIME HELP.UBER.COMCA", parent_vendor_id: null },
+      ];
+
+      const parentsWithChildren: ParentWithChildrenInfo[] = [
+        {
+          parent: { id: 100, name: "Uber", parent_vendor_id: null },
+          children: [{ id: 50, name: "UBER *TRIP", parent_vendor_id: 100 }],
+        },
+      ];
+
+      const suggestions = suggestVendorGroupings(vendors, [], parentsWithChildren);
+
+      // Should suggest adding to existing Uber parent
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].parentName).toBe("Uber");
+      expect(suggestions[0].childVendorIds).toEqual([1]);
+    });
+  });
+});
+
+// ============================================================================
+// extractFirstWord Tests
+// ============================================================================
+
+describe("extractFirstWord", () => {
+  it("extracts first word from multi-word string", () => {
+    expect(extractFirstWord("amazon marketplace")).toBe("amazon");
+    expect(extractFirstWord("uber eats delivery")).toBe("uber");
+    expect(extractFirstWord("starbucks coffee shop")).toBe("starbucks");
+  });
+
+  it("returns entire string for single word", () => {
+    expect(extractFirstWord("amazon")).toBe("amazon");
+    expect(extractFirstWord("starbucks")).toBe("starbucks");
+  });
+
+  it("handles empty string", () => {
+    expect(extractFirstWord("")).toBe("");
   });
 });

@@ -73,6 +73,15 @@ export function normalizeVendorName(name: string): string {
 }
 
 /**
+ * Extract the first word from a normalized vendor name.
+ * Used for more aggressive parent merging.
+ */
+export function extractFirstWord(normalized: string): string {
+  const firstSpace = normalized.indexOf(" ");
+  return firstSpace > 0 ? normalized.substring(0, firstSpace) : normalized;
+}
+
+/**
  * Find the longest common prefix between two strings.
  *
  * @param a - First string
@@ -119,11 +128,14 @@ export interface GroupingConfig {
   similarityThreshold: number;
   /** Minimum length of normalized name to consider for grouping. Default: 3 */
   minNameLength: number;
+  /** Enable verbose logging for debugging. Default: false */
+  debug: boolean;
 }
 
 const DEFAULT_CONFIG: GroupingConfig = {
   similarityThreshold: 0.6,
   minNameLength: 3,
+  debug: false,
 };
 
 /**
@@ -149,42 +161,65 @@ export function suggestVendorGroupings(
   config: Partial<GroupingConfig> = {}
 ): VendorGroupingSuggestion[] {
   const cfg = { ...DEFAULT_CONFIG, ...config };
+  const log = cfg.debug ? console.log.bind(console, "[VendorGrouping]") : () => {};
   const suggestions: VendorGroupingSuggestion[] = [];
+
+  log("=== Starting Vendor Grouping ===");
+  log(`Input: ${vendors.length} vendors, ${existingParents.length} existingParents, ${parentsWithChildren.length} parentsWithChildren`);
+  log(`Config: threshold=${cfg.similarityThreshold}, minNameLength=${cfg.minNameLength}`);
 
   // Only consider ungrouped vendors (no parent)
   const ungroupedVendors = vendors.filter((v) => v.parent_vendor_id === null);
+  log(`Ungrouped vendors: ${ungroupedVendors.length}`);
 
   if (ungroupedVendors.length === 0) {
+    log("No ungrouped vendors, returning empty");
     return suggestions;
   }
 
+  // Build set of ungrouped vendor IDs for filtering
+  const ungroupedVendorIds = new Set(ungroupedVendors.map((v) => v.id));
+
   // Normalize all vendor names
   const vendorNormalized = new Map<number, string>();
+  log("\n--- Normalizing vendors ---");
   for (const vendor of ungroupedVendors) {
     const normalized = normalizeVendorName(vendor.name);
     if (normalized.length >= cfg.minNameLength) {
       vendorNormalized.set(vendor.id, normalized);
+      log(`  ${vendor.id}: "${vendor.name}" -> "${normalized}"`);
+    } else {
+      log(`  ${vendor.id}: "${vendor.name}" -> "${normalized}" (SKIPPED - too short)`);
     }
   }
 
-  // Normalize existing parents (root vendors without children)
+  // Filter existingParents to exclude vendors that are being analyzed
+  // This prevents reciprocal suggestions where A suggests B as parent AND B suggests A as parent
+  const filteredExistingParents = existingParents.filter((p) => !ungroupedVendorIds.has(p.id));
+  log(`\nFiltered existingParents: ${filteredExistingParents.length} (excluded ${existingParents.length - filteredExistingParents.length} that are in vendors list)`);
+
+  // Normalize existing parents (only those not being analyzed)
   const parentNormalized = new Map<number, string>();
-  for (const parent of existingParents) {
+  for (const parent of filteredExistingParents) {
     const normalized = normalizeVendorName(parent.name);
     if (normalized.length >= cfg.minNameLength) {
       parentNormalized.set(parent.id, normalized);
+      log(`  Parent ${parent.id}: "${parent.name}" -> "${normalized}"`);
     }
   }
 
   // Build a map of child normalized names to their parent
   // This allows matching new vendors against existing children (siblings)
   const childToParentMap = new Map<string, { parentId: number; parentName: string; parentNorm: string }>();
+  log("\n--- Building child-to-parent map ---");
   for (const { parent, children } of parentsWithChildren) {
     const parentNorm = normalizeVendorName(parent.name);
+    log(`  Parent "${parent.name}" (${parent.id}) with ${children.length} children:`);
     for (const child of children) {
       const childNorm = normalizeVendorName(child.name);
       if (childNorm.length >= cfg.minNameLength) {
         childToParentMap.set(childNorm, { parentId: parent.id, parentName: parent.name, parentNorm });
+        log(`    Child: "${child.name}" -> "${childNorm}"`);
       }
     }
     // Also add the parent itself to the map (for direct parent matching)
@@ -215,8 +250,10 @@ export function suggestVendorGroupings(
     return suggestion;
   };
 
-  // First pass: try to match ungrouped vendors to existing parents that have children
-  // This includes matching against children (siblings)
+  // ==========================================
+  // PASS 1: Match against existing parents with children (sibling matching)
+  // ==========================================
+  log("\n=== PASS 1: Sibling matching (existing parents with children) ===");
   for (const [vendorId, normalized] of vendorNormalized) {
     if (assignedVendors.has(vendorId)) continue;
 
@@ -237,23 +274,28 @@ export function suggestVendorGroupings(
           suggestion.childVendorIds.push(vendorId);
           suggestion.childVendorNames.push(vendor.name);
           assignedVendors.add(vendorId);
+          log(`  MATCH: "${vendor.name}" -> parent "${parentInfo.parentName}" (similarity ${similarity.toFixed(3)} with "${childNorm}")`);
         }
         break;
       }
     }
   }
+  log(`After Pass 1: ${assignedVendors.size} vendors assigned`);
 
-  // Second pass: try to match remaining ungrouped vendors to root parents without children
+  // ==========================================
+  // PASS 2: Match against root parents without children (only true existing parents)
+  // ==========================================
+  log("\n=== PASS 2: Match against existing root parents ===");
   for (const [vendorId, normalized] of vendorNormalized) {
     if (assignedVendors.has(vendorId)) continue;
 
     for (const [parentId, parentNorm] of parentNormalized) {
-      // Skip if vendor would match itself (happens when same vendors are in both lists)
+      // Skip if vendor would match itself (should not happen now due to filtering)
       if (vendorId === parentId) continue;
 
       const similarity = lcpSimilarity(normalized, parentNorm);
       if (similarity >= cfg.similarityThreshold) {
-        const parent = existingParents.find((p) => p.id === parentId);
+        const parent = filteredExistingParents.find((p) => p.id === parentId);
         if (parent) {
           const suggestion = findOrCreateSuggestion(parentId, parent.name, parentNorm);
           const vendor = ungroupedVendors.find((v) => v.id === vendorId);
@@ -261,17 +303,23 @@ export function suggestVendorGroupings(
             suggestion.childVendorIds.push(vendorId);
             suggestion.childVendorNames.push(vendor.name);
             assignedVendors.add(vendorId);
+            log(`  MATCH: "${vendor.name}" -> parent "${parent.name}" (similarity ${similarity.toFixed(3)})`);
           }
         }
         break;
       }
     }
   }
+  log(`After Pass 2: ${assignedVendors.size} vendors assigned`);
 
-  // Second pass: group remaining ungrouped vendors with each other
+  // ==========================================
+  // PASS 3: Group remaining vendors by exact normalized match
+  // ==========================================
+  log("\n=== PASS 3: Exact normalized match grouping ===");
   const remainingVendors = ungroupedVendors.filter(
     (v) => !assignedVendors.has(v.id) && vendorNormalized.has(v.id)
   );
+  log(`Remaining vendors for grouping: ${remainingVendors.length}`);
 
   // Group by exact normalized match first
   const exactGroups = new Map<string, VendorInfo[]>();
@@ -287,9 +335,10 @@ export function suggestVendorGroupings(
   // Create suggestions for exact matches
   for (const [normalized, groupVendors] of exactGroups) {
     if (groupVendors.length >= 2) {
-      // Use the shortest original name as the parent name (often cleanest)
-      const sortedByLength = [...groupVendors].sort((a, b) => a.name.length - b.name.length);
-      const parentCandidate = sortedByLength[0];
+      log(`  EXACT GROUP "${normalized}": ${groupVendors.length} vendors`);
+      for (const v of groupVendors) {
+        log(`    - "${v.name}"`);
+      }
 
       suggestions.push({
         parentName: createCanonicalName(normalized),
@@ -303,9 +352,14 @@ export function suggestVendorGroupings(
       }
     }
   }
+  log(`After Pass 3: ${assignedVendors.size} vendors assigned`);
 
-  // Third pass: LCP similarity matching for remaining vendors
+  // ==========================================
+  // PASS 4: LCP similarity matching for remaining vendors
+  // ==========================================
+  log("\n=== PASS 4: LCP similarity matching ===");
   const stillRemaining = remainingVendors.filter((v) => !assignedVendors.has(v.id));
+  log(`Still remaining: ${stillRemaining.length} vendors`);
 
   for (let i = 0; i < stillRemaining.length; i++) {
     const vendor1 = stillRemaining[i];
@@ -326,6 +380,7 @@ export function suggestVendorGroupings(
       const similarity = lcpSimilarity(norm1, norm2);
       if (similarity >= cfg.similarityThreshold) {
         group.push(vendor2);
+        log(`  LCP MATCH: "${vendor1.name}" <-> "${vendor2.name}" (similarity ${similarity.toFixed(3)})`);
       }
     }
 
@@ -334,6 +389,8 @@ export function suggestVendorGroupings(
         const norm = vendorNormalized.get(v.id) ?? "";
         return longestCommonPrefix(prefix, norm);
       }, vendorNormalized.get(group[0].id) ?? "");
+
+      log(`  LCP GROUP "${commonPrefix}": ${group.length} vendors`);
 
       suggestions.push({
         parentName: createCanonicalName(commonPrefix),
@@ -347,6 +404,7 @@ export function suggestVendorGroupings(
       }
     }
   }
+  log(`After Pass 4: ${assignedVendors.size} vendors assigned`);
 
   // Build a set of existing parent names (both from parentsWithChildren and existingParents)
   const existingParentNames = new Set<string>();
@@ -357,17 +415,161 @@ export function suggestVendorGroupings(
     existingParentNames.add(parent.name);
   }
 
-  // Filter out suggestions:
-  // - For existing parents: allow even a single new child (adding to existing tree)
-  // - For new groups: require at least 2 vendors (creating new tree)
-  return suggestions.filter((s) => {
+  log(`\n=== Before parent merging: ${suggestions.length} suggestions ===`);
+  for (const s of suggestions) {
+    log(`  "${s.parentName}" (${s.normalizedForm}): ${s.childVendorIds.length} children - ${s.childVendorNames.join(", ")}`);
+  }
+
+  // ==========================================
+  // PASS 5: Merge similar NEW parent suggestions
+  // ==========================================
+  log("\n=== PASS 5: Parent merging ===");
+  const mergedSuggestions = mergeSimilarParentSuggestions(suggestions, existingParentNames, cfg, log);
+
+  log(`\n=== After parent merging: ${mergedSuggestions.length} suggestions ===`);
+  for (const s of mergedSuggestions) {
+    log(`  "${s.parentName}" (${s.normalizedForm}): ${s.childVendorIds.length} children`);
+  }
+
+  // ==========================================
+  // PASS 6: Filter out invalid suggestions
+  // ==========================================
+  log("\n=== PASS 6: Filtering suggestions ===");
+  const filtered = mergedSuggestions.filter((s) => {
     if (existingParentNames.has(s.parentName)) {
       // Adding to existing parent - allow even one child
-      return s.childVendorIds.length >= 1;
+      const keep = s.childVendorIds.length >= 1;
+      log(`  "${s.parentName}": existing parent, ${s.childVendorIds.length} children -> ${keep ? "KEEP" : "REMOVE"}`);
+      return keep;
     }
     // Creating new group - require at least 2
-    return s.childVendorIds.length >= 2;
+    const keep = s.childVendorIds.length >= 2;
+    log(`  "${s.parentName}": new parent, ${s.childVendorIds.length} children -> ${keep ? "KEEP" : "REMOVE"}`);
+    return keep;
   });
+
+  log(`\n=== Final result: ${filtered.length} suggestions ===`);
+  return filtered;
+}
+
+/**
+ * Merge similar parent suggestions into unified groups.
+ *
+ * Uses first-word matching for aggressive merging of merchant names.
+ * For example, "Amazon Reta" and "Amazon Mktpl" both start with "amazon"
+ * so they get merged into a single "Amazon" parent.
+ *
+ * Only NEW parent suggestions are merged (not existing parents).
+ */
+function mergeSimilarParentSuggestions(
+  suggestions: VendorGroupingSuggestion[],
+  existingParentNames: Set<string>,
+  cfg: GroupingConfig,
+  log: (...args: unknown[]) => void
+): VendorGroupingSuggestion[] {
+  // Separate existing parent suggestions from new parent suggestions
+  const existingParentSuggestions: VendorGroupingSuggestion[] = [];
+  const newParentSuggestions: VendorGroupingSuggestion[] = [];
+
+  for (const suggestion of suggestions) {
+    if (existingParentNames.has(suggestion.parentName)) {
+      existingParentSuggestions.push(suggestion);
+    } else {
+      newParentSuggestions.push(suggestion);
+    }
+  }
+
+  log(`Existing parent suggestions: ${existingParentSuggestions.length}`);
+  log(`New parent suggestions to merge: ${newParentSuggestions.length}`);
+
+  // If no new parent suggestions, nothing to merge
+  if (newParentSuggestions.length <= 1) {
+    return suggestions;
+  }
+
+  // Extract first words for aggressive matching
+  const parentFirstWords = new Map<VendorGroupingSuggestion, string>();
+  const parentNormalized = new Map<VendorGroupingSuggestion, string>();
+  for (const suggestion of newParentSuggestions) {
+    const normalized = normalizeVendorName(suggestion.parentName);
+    const firstWord = extractFirstWord(normalized);
+    parentNormalized.set(suggestion, normalized);
+    parentFirstWords.set(suggestion, firstWord);
+    log(`  "${suggestion.parentName}" -> normalized="${normalized}", firstWord="${firstWord}"`);
+  }
+
+  // Track which suggestions have been merged
+  const mergedIndices = new Set<number>();
+  const mergedResults: VendorGroupingSuggestion[] = [];
+
+  // Compare each pair of new parent suggestions using FIRST WORD matching
+  for (let i = 0; i < newParentSuggestions.length; i++) {
+    if (mergedIndices.has(i)) continue;
+
+    const suggestion1 = newParentSuggestions[i];
+    const firstWord1 = parentFirstWords.get(suggestion1) ?? "";
+    const norm1 = parentNormalized.get(suggestion1) ?? "";
+
+    if (firstWord1.length < cfg.minNameLength) {
+      // Too short to merge, keep as-is
+      mergedResults.push(suggestion1);
+      mergedIndices.add(i);
+      continue;
+    }
+
+    // Find all suggestions with the same first word
+    const toMerge: VendorGroupingSuggestion[] = [suggestion1];
+    const mergeNorms: string[] = [norm1];
+
+    for (let j = i + 1; j < newParentSuggestions.length; j++) {
+      if (mergedIndices.has(j)) continue;
+
+      const suggestion2 = newParentSuggestions[j];
+      const firstWord2 = parentFirstWords.get(suggestion2) ?? "";
+      const norm2 = parentNormalized.get(suggestion2) ?? "";
+
+      if (firstWord2.length < cfg.minNameLength) continue;
+
+      // Check if first words match (exact match for aggressive grouping)
+      if (firstWord1 === firstWord2) {
+        toMerge.push(suggestion2);
+        mergeNorms.push(norm2);
+        mergedIndices.add(j);
+        log(`  MERGE: "${suggestion1.parentName}" + "${suggestion2.parentName}" (same first word: "${firstWord1}")`);
+      }
+    }
+
+    mergedIndices.add(i);
+
+    if (toMerge.length === 1) {
+      // No similar parents found, keep as-is
+      mergedResults.push(suggestion1);
+    } else {
+      // Merge all similar suggestions into one
+      // Use just the first word as the parent name
+      const commonPrefix = firstWord1;
+
+      // Collect all child vendors from merged suggestions
+      const allChildIds: number[] = [];
+      const allChildNames: string[] = [];
+      for (const s of toMerge) {
+        allChildIds.push(...s.childVendorIds);
+        allChildNames.push(...s.childVendorNames);
+      }
+
+      log(`  MERGED GROUP: "${createCanonicalName(commonPrefix)}" with ${allChildIds.length} total children`);
+
+      mergedResults.push({
+        parentName: createCanonicalName(commonPrefix),
+        childVendorIds: allChildIds,
+        childVendorNames: allChildNames,
+        normalizedForm: commonPrefix,
+      });
+    }
+  }
+
+  // Return existing parent suggestions (unchanged) + merged new parent suggestions
+  return [...existingParentSuggestions, ...mergedResults];
 }
 
 /**
