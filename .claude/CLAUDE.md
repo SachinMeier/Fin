@@ -7,9 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Principles
 
 
-This is an Extremely minimal, simple project and keeping the code and documentation minimal and focused on the task at hand is vital. 
+This is an Extremely minimal, simple project and keeping the code and documentation minimal and focused on the task at hand is vital.
 
 It is meant to be a local tool for personal use and not meant to be a public facing application. Thus, scaling and performance are not a concern. Do not over engineer the solutions, do not worry about bandwidth or scalability. Keep the code simple, readable, and extendable.
+
+**NEVER** worry about backwards compatibility — not in the database, not in the code, not in the endpoints. This is a personal tool with a single user. Just change things directly.
 
 ## ⚠️ MANDATORY: TypeScript Style Guide ⚠️
 
@@ -50,6 +52,12 @@ This guide contains authoritative rules for:
 ### Database Rules
 
 - **NEVER** auto-populate new database fields/schema with seed data unless explicitly asked
+
+### Running the Dev Server
+
+- **NEVER** run the app on port 3000 — the user runs their own instance on that port
+- When running the server for testing, use: `PORT=3001 npm run dev`
+- The port is configurable via the `PORT` environment variable
 
 ## TypeScript Configuration
 

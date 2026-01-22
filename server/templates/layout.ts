@@ -16,8 +16,9 @@ interface NavLink {
 
 const navLinks: NavLink[] = [
   { label: "Home", href: "/" },
+  { label: "Accounts", href: "/accounts" },
   { label: "Statements", href: "/statements" },
-  { label: "Vendors", href: "/vendors" },
+  { label: "Counterparties", href: "/counterparties" },
   { label: "Categories", href: "/categories" },
   { label: "Rules", href: "/rules" },
 ];

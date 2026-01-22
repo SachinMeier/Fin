@@ -42,7 +42,9 @@
       "Bash(npm install)",
       "Bash(FIN_DB_PATH=./data/fin.db timeout 3 npm run dev:server:*)",
       "Bash(sqlite3:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(lsof:*)",
+      "Bash(FIN_DB_PATH=/tmp/fin-test.db npx tsx:*)"
     ],
     "defaultMode": "acceptEdits"
   },

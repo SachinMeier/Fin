@@ -30,72 +30,85 @@ interface Category {
   created_at: string;
 }
 
-interface DefaultCategory {
+export interface DefaultCategory {
   name: string;
   parent: string | null;
   color: string;
 }
 
 // Default categories to import
-const defaultCategories: DefaultCategory[] = [
-  // Top-level categories
-  { name: "Income", parent: null, color: "#22C55E" },
-  { name: "Expenses", parent: null, color: "#EF4444" },
-  { name: "Transfers", parent: null, color: "#6B7280" },
+// Color scheme rules:
+// 1. Top-level siblings have distinct, bright colors (avoid dark blues/navies)
+// 2. Children are slightly darker than parents
+// 3. All colors maintain high contrast for readability
+export const DEFAULT_CATEGORIES: DefaultCategory[] = [
+  // Top-level categories - bright, distinct colors
+  { name: "Income", parent: null, color: "#10B981" },      // Emerald green
+  { name: "Expenses", parent: null, color: "#F43F5E" },    // Rose red
+  { name: "Transfers", parent: null, color: "#A78BFA" },   // Light violet (avoiding gray)
 
-  // Income children
-  { name: "Salary / Wages", parent: "Income", color: "#16A34A" },
-  { name: "Benefits", parent: "Income", color: "#15803D" },
-  { name: "Other (Income)", parent: "Income", color: "#14532D" },
+  // Income children - slightly darker greens
+  { name: "Salary / Wages", parent: "Income", color: "#059669" },
+  { name: "Benefits", parent: "Income", color: "#047857" },
+  { name: "Other (Income)", parent: "Income", color: "#065F46" },
 
-  // Expenses > Housing
-  { name: "Housing", parent: "Expenses", color: "#8B5CF6" },
-  { name: "Utilities", parent: "Housing", color: "#7C3AED" },
-  { name: "Rent", parent: "Housing", color: "#6D28D9" },
+  // Expenses > Housing - Violet/Purple family
+  { name: "Housing", parent: "Expenses", color: "#A855F7" },
+  { name: "Utilities", parent: "Housing", color: "#9333EA" },
+  { name: "Rent", parent: "Housing", color: "#7C3AED" },
+  { name: "Furniture", parent: "Housing", color: "#6D28D9" },
 
-  // Expenses > Food & Drink
-  { name: "Food & Drink", parent: "Expenses", color: "#F97316" },
-  { name: "Groceries", parent: "Food & Drink", color: "#EA580C" },
-  { name: "Restaurants", parent: "Food & Drink", color: "#C2410C" },
-  { name: "Coffee Shops", parent: "Food & Drink", color: "#9A3412" },
-  { name: "Bars", parent: "Food & Drink", color: "#7C2D12" },
-  { name: "Delivery", parent: "Food & Drink", color: "#FB923C" },
+  // Expenses > Food & Drink - Orange family
+  { name: "Food & Drink", parent: "Expenses", color: "#FB923C" },
+  { name: "Groceries", parent: "Food & Drink", color: "#F97316" },
+  { name: "Restaurants", parent: "Food & Drink", color: "#EA580C" },
+  { name: "Cafes", parent: "Food & Drink", color: "#DC6A1D" },
+  { name: "Bars & Clubs", parent: "Food & Drink", color: "#C2410C" },
+  { name: "Food Delivery", parent: "Food & Drink", color: "#D95617" },
 
-  // Expenses > Transportation
-  { name: "Transportation", parent: "Expenses", color: "#3B82F6" },
-  { name: "Gas", parent: "Transportation", color: "#2563EB" },
-  { name: "Public Transit", parent: "Transportation", color: "#1D4ED8" },
-  { name: "Rideshare", parent: "Transportation", color: "#1E40AF" },
-  { name: "Parking", parent: "Transportation", color: "#1E3A8A" },
-  { name: "Airfare", parent: "Transportation", color: "#60A5FA" },
-  { name: "Vehicle Insurance", parent: "Transportation", color: "#93C5FD" },
-  { name: "Vehicle Maintenance", parent: "Transportation", color: "#BFDBFE" },
-  { name: "Other (Transportation)", parent: "Transportation", color: "#DBEAFE" },
+  // Expenses > Transportation - Cyan/Teal family (avoiding blue)
+  { name: "Transportation", parent: "Expenses", color: "#22D3EE" },
+  { name: "Gas", parent: "Transportation", color: "#06B6D4" },
+  { name: "Public Transit", parent: "Transportation", color: "#0891B2" },
+  { name: "Rideshare", parent: "Transportation", color: "#0E7490" },
+  { name: "Parking", parent: "Transportation", color: "#0D7285" },
+  { name: "Airfare", parent: "Transportation", color: "#14B8C4" },
+  { name: "Vehicle Insurance", parent: "Transportation", color: "#0C9CAD" },
+  { name: "Vehicle Maintenance", parent: "Transportation", color: "#0A8698" },
+  { name: "Other (Transportation)", parent: "Transportation", color: "#097A8A" },
 
-  // Expenses > Entertainment
-  { name: "Entertainment", parent: "Expenses", color: "#EC4899" },
+  // Expenses > Entertainment - Pink/Fuchsia family
+  { name: "Entertainment", parent: "Expenses", color: "#F472B6" },
+  { name: "Sports", parent: "Entertainment", color: "#EC4899" },
+  { name: "Concerts & Shows", parent: "Entertainment", color: "#DB2777" },
+  { name: "Subscriptions", parent: "Entertainment", color: "#BE185D" },
 
-  // Expenses > Shopping
-  { name: "Shopping", parent: "Expenses", color: "#14B8A6" },
-  { name: "Clothing", parent: "Shopping", color: "#0D9488" },
-  { name: "Shoes", parent: "Shopping", color: "#0F766E" },
-  { name: "Accessories", parent: "Shopping", color: "#115E59" },
-  { name: "Electronics", parent: "Shopping", color: "#134E4A" },
-  { name: "Home Goods", parent: "Shopping", color: "#2DD4BF" },
-  { name: "Other (Shopping)", parent: "Shopping", color: "#5EEAD4" },
+  // Expenses > Shopping - Lime/Yellow-Green family
+  { name: "Shopping", parent: "Expenses", color: "#A3E635" },
+  { name: "Clothing", parent: "Shopping", color: "#84CC16" },
+  { name: "Shoes", parent: "Shopping", color: "#65A30D" },
+  { name: "Accessories", parent: "Shopping", color: "#4D7C0F" },
+  { name: "Electronics", parent: "Shopping", color: "#538714" },
+  { name: "Home Goods", parent: "Shopping", color: "#78A21C" },
+  { name: "Other (Shopping)", parent: "Shopping", color: "#6B9411" },
 
-  // Expenses > Health
-  { name: "Health", parent: "Expenses", color: "#F43F5E" },
-  { name: "Doctor", parent: "Health", color: "#E11D48" },
-  { name: "Dentist", parent: "Health", color: "#BE123C" },
-  { name: "Pharmacy", parent: "Health", color: "#9F1239" },
-  { name: "Gym", parent: "Health", color: "#881337" },
-  { name: "Other (Health)", parent: "Health", color: "#FB7185" },
+  // Expenses > Health - Coral/Red-Orange family
+  { name: "Health", parent: "Expenses", color: "#FB7185" },
+  { name: "Doctor", parent: "Health", color: "#F43F5E" },
+  { name: "Dentist", parent: "Health", color: "#E11D48" },
+  { name: "Pharmacy", parent: "Health", color: "#BE123C" },
+  { name: "Gym", parent: "Health", color: "#D13555" },
+  { name: "Other (Health)", parent: "Health", color: "#C9224A" },
 
-  // Transfers children
-  { name: "Tax Returns", parent: "Transfers", color: "#4B5563" },
-  { name: "Payments", parent: "Transfers", color: "#DEADBE" },
-  { name: "Other (Transfers)", parent: "Transfers", color: "#374151" },
+  // Expenses > Productivity - Sky blue family
+  { name: "Productivity", parent: "Expenses", color: "#38BDF8" },
+  { name: "Subscriptions (Productivity)", parent: "Productivity", color: "#0EA5E9" },
+  { name: "Other (Productivity)", parent: "Productivity", color: "#0284C7" },
+
+  // Transfers children - Light violet shades (avoiding grays)
+  { name: "Tax Returns", parent: "Transfers", color: "#8B5CF6" },
+  { name: "Payments", parent: "Transfers", color: "#7C3AED" },
+  { name: "Other (Transfers)", parent: "Transfers", color: "#6D28D9" },
 ];
 
 // ============================================================================
@@ -126,13 +139,13 @@ router.get("/", (req, res) => {
     SELECT
       c.*,
       (SELECT COUNT(*) FROM categories WHERE parent_category_id = c.id) AS children_count,
-      (SELECT COUNT(*) FROM vendors WHERE category_id = c.id) AS vendor_count
+      (SELECT COUNT(*) FROM counterparties WHERE category_id = c.id) AS counterparty_count
     FROM categories c
     WHERE c.parent_category_id IS NULL
     ORDER BY c.name
   `
     )
-    .all() as Array<Category & { children_count: number; vendor_count: number }>;
+    .all() as Array<Category & { children_count: number; counterparty_count: number }>;
 
   // Check for import success message in query params
   const imported = req.query.imported ? Number(req.query.imported) : undefined;
@@ -149,7 +162,7 @@ router.post("/import-defaults", (_req, res) => {
   let skippedCount = 0;
 
   db.transaction(() => {
-    for (const cat of defaultCategories) {
+    for (const cat of DEFAULT_CATEGORIES) {
       const existing = getCategoryByName(cat.name);
 
       if (existing) {
@@ -243,14 +256,14 @@ router.get("/:id", (req, res) => {
     SELECT
       c.*,
       (SELECT COUNT(*) FROM categories WHERE parent_category_id = c.id) AS children_count,
-      (SELECT COUNT(*) FROM vendors WHERE category_id = c.id) AS vendor_count
+      (SELECT COUNT(*) FROM counterparties WHERE category_id = c.id) AS counterparty_count
     FROM categories c
     WHERE c.parent_category_id = ?
     ORDER BY c.name
   `
     )
     .all(categoryId) as Array<
-    Category & { children_count: number; vendor_count: number }
+    Category & { children_count: number; counterparty_count: number }
   >;
 
   // Get ancestor path for breadcrumbs
@@ -265,30 +278,30 @@ router.get("/:id", (req, res) => {
     .prepare(
       `
     SELECT
-      COUNT(DISTINCT v.id) AS vendor_count,
+      COUNT(DISTINCT cp.id) AS counterparty_count,
       COUNT(t.id) AS transaction_count,
       COALESCE(SUM(t.amount), 0) AS total_amount
-    FROM vendors v
-    LEFT JOIN transactions t ON t.vendor_id = v.id
-    WHERE v.category_id IN (${placeholders})
+    FROM counterparties cp
+    LEFT JOIN transactions t ON t.counterparty_id = cp.id
+    WHERE cp.category_id IN (${placeholders})
   `
     )
     .get(...descendantIds) as {
-    vendor_count: number;
+    counterparty_count: number;
     transaction_count: number;
     total_amount: number;
   };
 
-  // Get vendors directly in this category (not subcategories)
-  const vendors = db
+  // Get counterparties directly in this category (not subcategories)
+  const counterparties = db
     .prepare(
       `
-    SELECT v.id, v.name, v.address, COUNT(t.id) AS transaction_count, COALESCE(SUM(t.amount), 0) AS total_amount
-    FROM vendors v
-    LEFT JOIN transactions t ON t.vendor_id = v.id
-    WHERE v.category_id = ?
-    GROUP BY v.id
-    ORDER BY v.name
+    SELECT cp.id, cp.name, cp.address, COUNT(t.id) AS transaction_count, COALESCE(SUM(t.amount), 0) AS total_amount
+    FROM counterparties cp
+    LEFT JOIN transactions t ON t.counterparty_id = cp.id
+    WHERE cp.category_id = ?
+    GROUP BY cp.id
+    ORDER BY cp.name
     LIMIT 10
   `
     )
@@ -301,7 +314,7 @@ router.get("/:id", (req, res) => {
   }>;
 
   res.send(
-    renderCategoryDetailPage(category, children, breadcrumbs, stats, vendors)
+    renderCategoryDetailPage(category, children, breadcrumbs, stats, counterparties)
   );
 });
 
@@ -328,12 +341,12 @@ router.get("/:id/transactions", (req, res) => {
       `
     SELECT
       t.id, t.date, t.amount, t.reference_number,
-      v.name AS vendor_name, v.address AS vendor_address,
+      cp.name AS counterparty_name, cp.address AS counterparty_address,
       c.id AS category_id, c.name AS category_name, c.color AS category_color
     FROM transactions t
-    INNER JOIN vendors v ON t.vendor_id = v.id
-    INNER JOIN categories c ON v.category_id = c.id
-    WHERE v.category_id IN (${placeholders})
+    INNER JOIN counterparties cp ON t.counterparty_id = cp.id
+    INNER JOIN categories c ON cp.category_id = c.id
+    WHERE cp.category_id IN (${placeholders})
     ORDER BY t.date DESC
     LIMIT 500
   `
@@ -343,8 +356,8 @@ router.get("/:id/transactions", (req, res) => {
     date: string;
     amount: number;
     reference_number: string;
-    vendor_name: string;
-    vendor_address: string;
+    counterparty_name: string;
+    counterparty_address: string;
     category_id: number;
     category_name: string;
     category_color: string | null;
@@ -515,10 +528,10 @@ router.post("/:id/delete", (req, res) => {
     return;
   }
 
-  // Delete the category and reassign its vendors to Uncategorized
+  // Delete the category and reassign its counterparties to Uncategorized
   db.transaction(() => {
-    // Reassign all vendors in this category to Uncategorized
-    db.prepare("UPDATE vendors SET category_id = ? WHERE category_id = ?")
+    // Reassign all counterparties in this category to Uncategorized
+    db.prepare("UPDATE counterparties SET category_id = ? WHERE category_id = ?")
       .run(UNCATEGORIZED_CATEGORY_ID, categoryId);
 
     // Delete the category
@@ -539,7 +552,7 @@ router.post("/:id/delete", (req, res) => {
 
 function renderCategoriesListPage(
   categories: Array<
-    Category & { children_count: number; vendor_count: number }
+    Category & { children_count: number; counterparty_count: number }
   >,
   imported?: number,
   skipped?: number
@@ -555,7 +568,7 @@ function renderCategoriesListPage(
             : renderCategoryPill({ name: row.name, color: row.color, size: "md" }),
       },
       { key: "children_count", label: "Subcategories", align: "right" },
-      { key: "vendor_count", label: "Vendors", align: "right" },
+      { key: "counterparty_count", label: "Counterparties", align: "right" },
     ],
     rows: categories,
     rowHref: (row) => `/categories/${row.id}`,
@@ -570,8 +583,13 @@ function renderCategoriesListPage(
 
   const content = `
     <div class="flex items-center justify-between mb-6">
-      <h1 class="text-2xl font-semibold">Categories</h1>
-      <div class="flex gap-2">
+      <div>
+        <h1 class="text-2xl font-semibold">Categories</h1>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+          Categories allow you to do breakdowns and drilldowns on your earning/spending patterns. Import the defaults or create your own!
+        </p>
+      </div>
+      <div class="flex gap-2 mt-1 shrink-0 ml-6">
         <form method="POST" action="/categories/import-defaults" class="inline">
           ${renderButton({ label: "Import Defaults", variant: "normal", type: "submit" })}
         </form>
@@ -592,11 +610,11 @@ function renderCategoriesListPage(
 function renderCategoryDetailPage(
   category: Category,
   children: Array<
-    Category & { children_count: number; vendor_count: number }
+    Category & { children_count: number; counterparty_count: number }
   >,
   breadcrumbs: Category[],
-  stats: { vendor_count: number; transaction_count: number; total_amount: number },
-  vendors: Array<{
+  stats: { counterparty_count: number; transaction_count: number; total_amount: number },
+  counterparties: Array<{
     id: number;
     name: string;
     address: string;
@@ -618,18 +636,18 @@ function renderCategoryDetailPage(
                 renderCategoryPill({ name: row.name, color: row.color, size: "md" }),
             },
             { key: "children_count", label: "Children", align: "right" },
-            { key: "vendor_count", label: "Vendors", align: "right" },
+            { key: "counterparty_count", label: "Counterparties", align: "right" },
           ],
           rows: children,
           rowHref: (row) => `/categories/${row.id}`,
         })
       : `<p class="text-gray-500 dark:text-gray-400 text-sm">No subcategories</p>`;
 
-  const vendorsTableHtml =
-    vendors.length > 0
+  const counterpartiesTableHtml =
+    counterparties.length > 0
       ? renderTable({
           columns: [
-            { key: "name", label: "Vendor" },
+            { key: "name", label: "Counterparty" },
             { key: "transaction_count", label: "Transactions", align: "right" },
             {
               key: "total_amount",
@@ -638,10 +656,10 @@ function renderCategoryDetailPage(
               render: (v) => formatCurrency(Number(v) || 0),
             },
           ],
-          rows: vendors,
-          rowHref: (row) => `/vendors/${row.id}`,
+          rows: counterparties,
+          rowHref: (row) => `/counterparties/${row.id}`,
         })
-      : `<p class="text-gray-500 dark:text-gray-400 text-sm">No vendors in this category</p>`;
+      : `<p class="text-gray-500 dark:text-gray-400 text-sm">No counterparties in this category</p>`;
 
   // Don't show edit/delete buttons for Uncategorized
   const actionButtons = isUncategorized
@@ -662,7 +680,7 @@ function renderCategoryDetailPage(
           label: "Delete",
           variant: "danger",
           type: "submit",
-          onclick: "return confirm('Delete this category? Vendors will be moved to Uncategorized.')",
+          onclick: "return confirm('Delete this category? Counterparties will be moved to Uncategorized.')",
         })}
       </form>`;
 
@@ -680,7 +698,7 @@ function renderCategoryDetailPage(
           ${categoryPillHtml}
         </div>
         <div class="flex gap-6 text-sm text-gray-500 dark:text-gray-400">
-          <span><span class="font-medium text-gray-900 dark:text-gray-100">Vendors:</span> ${stats.vendor_count}</span>
+          <span><span class="font-medium text-gray-900 dark:text-gray-100">Counterparties:</span> ${stats.counterparty_count}</span>
           <span><span class="font-medium text-gray-900 dark:text-gray-100">Transactions:</span> ${stats.transaction_count}</span>
           <span><span class="font-medium text-gray-900 dark:text-gray-100">Total:</span> ${formatCurrency(stats.total_amount)}</span>
         </div>
@@ -704,13 +722,13 @@ function renderCategoryDetailPage(
 
       <section>
         <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-medium">Vendors in this Category</h2>
+          <h2 class="text-lg font-medium">Counterparties in this Category</h2>
           ${renderLinkButton({
-            label: "Assign Vendors",
-            href: `/vendors?uncategorized=1`,
+            label: "Assign Counterparties",
+            href: `/counterparties?uncategorized=1`,
           })}
         </div>
-        ${vendorsTableHtml}
+        ${counterpartiesTableHtml}
       </section>
     </div>
   `;
@@ -730,7 +748,7 @@ function renderCategoryTransactionsPage(
     date: string;
     amount: number;
     reference_number: string;
-    vendor_name: string;
+    counterparty_name: string;
     category_id: number;
     category_name: string;
     category_color: string | null;
@@ -742,7 +760,7 @@ function renderCategoryTransactionsPage(
   const tableHtml = renderTable({
     columns: [
       { key: "date", label: "Date" },
-      { key: "vendor_name", label: "Vendor" },
+      { key: "counterparty_name", label: "Counterparty" },
       {
         key: "category_name",
         label: "Category",

@@ -218,31 +218,31 @@ router.post("/:id/move-down", (req, res) => {
   res.redirect("/rules");
 });
 
-// POST /rules/reprocess-uncategorized - Run all uncategorized vendors through categorization rules
+// POST /rules/reprocess-uncategorized - Run all uncategorized counterparties through categorization rules
 router.post("/reprocess-uncategorized", (_req, res) => {
   const db = getDatabase();
 
-  // Get all uncategorized vendors
-  const uncategorizedVendors = db
-    .prepare("SELECT id, name FROM vendors WHERE category_id = ?")
+  // Get all uncategorized counterparties
+  const uncategorizedCounterparties = db
+    .prepare("SELECT id, name FROM counterparties WHERE category_id = ?")
     .all(UNCATEGORIZED_CATEGORY_ID) as Array<{ id: number; name: string }>;
 
   let categorizedCount = 0;
 
   // Run each through the categorization engine
-  for (const vendor of uncategorizedVendors) {
-    const result = applyCategorizationRules(db, vendor.name);
+  for (const counterparty of uncategorizedCounterparties) {
+    const result = applyCategorizationRules(db, counterparty.name);
     if (result.categoryId !== null) {
-      db.prepare("UPDATE vendors SET category_id = ? WHERE id = ?").run(
+      db.prepare("UPDATE counterparties SET category_id = ? WHERE id = ?").run(
         result.categoryId,
-        vendor.id
+        counterparty.id
       );
       categorizedCount++;
     }
   }
 
   // Redirect back to rules page with result count
-  res.redirect(`/rules?reprocessed=${categorizedCount}&total=${uncategorizedVendors.length}`);
+  res.redirect(`/rules?reprocessed=${categorizedCount}&total=${uncategorizedCounterparties.length}`);
 });
 
 // POST /rules/import-defaults - Import default pattern rules (skips duplicates)
@@ -285,18 +285,18 @@ router.post("/import-defaults", (_req, res) => {
   res.redirect(`/rules?imported=${importedCount}`);
 });
 
-// GET /rules/test - Test patterns against vendor names (API endpoint)
+// GET /rules/test - Test patterns against counterparty names (API endpoint)
 router.get("/test", (req, res) => {
   const pattern = typeof req.query.pattern === "string" ? req.query.pattern : "";
-  const vendorName = typeof req.query.vendor === "string" ? req.query.vendor : "";
+  const counterpartyName = typeof req.query.counterparty === "string" ? req.query.counterparty : "";
 
-  if (!pattern || !vendorName) {
-    res.json({ matches: false, error: "Pattern and vendor are required" });
+  if (!pattern || !counterpartyName) {
+    res.json({ matches: false, error: "Pattern and counterparty are required" });
     return;
   }
 
-  const matches = matchesPattern(vendorName, pattern);
-  res.json({ matches, pattern, vendorName });
+  const matches = matchesPattern(counterpartyName, pattern);
+  res.json({ matches, pattern, counterpartyName });
 });
 
 // ============================================================================
@@ -341,7 +341,7 @@ function renderRulesListPage(rules: DbRule[], options: RulesListOptions): string
     options.reprocessed !== null && options.total !== null
       ? `
     <div class="mb-6 px-4 py-3 text-sm rounded-lg bg-green-50 text-green-700 border border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800">
-      Categorized ${options.reprocessed} of ${options.total} uncategorized vendor${options.total === 1 ? "" : "s"}.
+      Categorized ${options.reprocessed} of ${options.total} uncategorized counterpart${options.total === 1 ? "y" : "ies"}.
     </div>
   `
       : "";
@@ -378,18 +378,21 @@ function renderRulesListPage(rules: DbRule[], options: RulesListOptions): string
     <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">Your rules, applied first.</p>
     ${customRulesHtml}
 
-    <h2 class="text-lg font-medium text-gray-700 dark:text-gray-300 mb-3 mt-8">Default Pattern Rules</h2>
+    <div class="flex items-center justify-between mb-3 mt-8">
+      <h2 class="text-lg font-medium text-gray-700 dark:text-gray-300">Default Pattern Rules</h2>
+      <form action="/rules/import-defaults" method="POST">
+        ${renderButton({ label: "Import Default Rules", type: "submit" })}
+      </form>
+    </div>
     <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">Built-in rules, applied after custom rules. Editing a default rule converts it to a custom rule.</p>
     ${defaultRulesHtml}
-    <form action="/rules/import-defaults" method="POST" class="mt-3">
-      ${renderButton({ label: "Import Default Rules", type: "submit" })}
-    </form>
 
     <div class="mt-8 pt-6 border-t border-gray-200 dark:border-gray-800">
+      <h2 class="text-lg font-medium text-gray-700 dark:text-gray-300 mb-3">Counterparty Tools</h2>
       <form action="/rules/reprocess-uncategorized" method="POST">
-        ${renderButton({ label: "Reprocess Uncategorized Vendors", type: "submit" })}
+        ${renderButton({ label: "Reprocess Uncategorized Counterparties", type: "submit" })}
         <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
-          Run all uncategorized vendors through the categorization rules.
+          Run all uncategorized counterparties through the categorization rules.
         </p>
       </form>
     </div>
@@ -474,13 +477,13 @@ function renderRuleForm({ categories, error, isNew, rule }: RuleFormOptions): st
     ? `<div class="px-4 py-3 mb-6 text-sm rounded-lg bg-red-50 text-red-700 border border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800">${escapeHtml(error)}</div>`
     : "";
 
-  // Get sample vendors for pattern preview
+  // Get sample counterparties for pattern preview
   const db = getDatabase();
-  const sampleVendors = db
-    .prepare("SELECT DISTINCT name FROM vendors ORDER BY name LIMIT 10")
+  const sampleCounterparties = db
+    .prepare("SELECT DISTINCT name FROM counterparties ORDER BY name LIMIT 10")
     .all() as Array<{ name: string }>;
 
-  const previewItems = sampleVendors
+  const previewItems = sampleCounterparties
     .map(
       (v) => `
     <div class="pattern-test-item flex items-center gap-2 text-sm py-1" data-test="${escapeHtml(v.name)}">
@@ -492,7 +495,7 @@ function renderRuleForm({ categories, error, isNew, rule }: RuleFormOptions): st
     .join("");
 
   const previewSection =
-    sampleVendors.length > 0
+    sampleCounterparties.length > 0
       ? `
     <div class="space-y-2">
       <p class="text-sm font-medium text-gray-700 dark:text-gray-300">Pattern Preview</p>

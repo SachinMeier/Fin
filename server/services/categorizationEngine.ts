@@ -100,6 +100,8 @@ export function expandBraces(pattern: string): string[] {
  *   *  → match any characters (0 or more)
  *   ?  → match exactly one character
  *   [abc] → match any character in brackets
+ *   \* → match literal asterisk
+ *   \? → match literal question mark
  *   Literal text → exact match (case-insensitive)
  *
  * Special regex characters are escaped so patterns like "Amazon.com" work correctly.
@@ -123,6 +125,17 @@ function globPatternToRegexString(glob: string): string {
         escaped += "\\\\";
       } else {
         escaped += char;
+      }
+    } else if (char === "\\" && i + 1 < glob.length) {
+      // Backslash escapes the next character (makes it literal)
+      const nextChar = glob[i + 1];
+      if (nextChar === "*" || nextChar === "?") {
+        // Escape glob wildcards to match literally
+        escaped += "\\" + nextChar;
+        i++; // Skip the next character
+      } else {
+        // For other characters, pass through the backslash (will be escaped below if needed)
+        escaped += "\\\\";
       }
     } else if (char === "*") {
       escaped += ".*";

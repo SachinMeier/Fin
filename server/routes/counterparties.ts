@@ -1,0 +1,1524 @@
+import { Router } from "express";
+import { getDatabase } from "../db/index.js";
+import { getCategoryTreeFlat, CategoryWithDepth } from "../db/categoryQueries.js";
+import { getCounterpartyTreeFlat, wouldCreateCounterpartyCycle, getRootCounterparties, getParentCounterpartiesWithChildren, updateCounterpartyCategoryWithDescendants, getCounterpartyAncestors, CounterpartyWithDepth, Counterparty as CounterpartyFromQueries } from "../db/counterpartyQueries.js";
+import { UNCATEGORIZED_CATEGORY_ID } from "../db/migrations.js";
+import {
+  suggestCounterpartyGroupings,
+  type CounterpartyInfo,
+} from "../services/counterpartyGroupingEngine.js";
+import { applyCategorizationRules } from "../services/categorizationEngine.js";
+import {
+  layout,
+  renderTable,
+  formatCurrency,
+  escapeHtml,
+  renderButton,
+  renderLinkButton,
+  renderCategoryPill,
+  renderUncategorizedPill,
+  renderInlineCategorySelect,
+  renderCounterpartyGroupingReview,
+  type GroupingSuggestionDisplay,
+} from "../templates/index.js";
+import type { CategoryOption } from "../templates/index.js";
+
+const router = Router();
+
+// Types
+interface Counterparty {
+  id: number;
+  name: string;
+  address: string | null;
+  category_id: number | null;
+  parent_counterparty_id: number | null;
+}
+
+interface CounterpartyWithStats extends Counterparty {
+  category_name: string | null;
+  category_color: string | null;
+  transaction_count: number;
+  total_amount: number;
+  children_total_amount: number;
+  depth: number;
+  parent_counterparty_name: string | null;
+}
+
+interface Category {
+  id: number;
+  name: string;
+}
+
+interface ChildCounterpartyTransactions {
+  counterparty: { id: number; name: string };
+  transactions: Array<{
+    id: number;
+    date: string;
+    amount: number;
+    reference_number: string;
+    statement_period: string;
+    statement_account: string;
+  }>;
+  totalAmount: number;
+}
+
+// GET /counterparties - List all counterparties with optional category filter
+router.get("/", (req, res) => {
+  const db = getDatabase();
+  const categoryFilter = typeof req.query.category === "string" ? req.query.category : null;
+  const grouped = typeof req.query.grouped === "string" ? parseInt(req.query.grouped, 10) : null;
+
+  // Get all categories for the filter dropdown
+  const categories = db
+    .prepare("SELECT id, name FROM categories ORDER BY name")
+    .all() as Category[];
+
+  // Get category tree for inline select dropdowns
+  const categoryTree = getCategoryTreeFlat();
+
+  // Build query based on filter
+  let whereClause = "";
+  const params: number[] = [];
+
+  if (categoryFilter === "uncategorized") {
+    whereClause = "WHERE c.category_id = ?";
+    params.push(UNCATEGORIZED_CATEGORY_ID);
+  } else if (categoryFilter !== null && categoryFilter !== "") {
+    const categoryId = parseInt(categoryFilter, 10);
+    if (!isNaN(categoryId)) {
+      whereClause = "WHERE c.category_id = ?";
+      params.push(categoryId);
+    }
+  }
+
+  // Use recursive CTE to get hierarchical counterparty list with depth
+  // Also calculate aggregated children amounts for parent counterparties
+  const counterparties = db
+    .prepare(
+      `
+    WITH RECURSIVE counterparty_tree AS (
+      SELECT
+        id,
+        name,
+        address,
+        category_id,
+        parent_counterparty_id,
+        0 AS depth,
+        name AS sort_path
+      FROM counterparties
+      WHERE parent_counterparty_id IS NULL
+
+      UNION ALL
+
+      SELECT
+        cp.id,
+        cp.name,
+        cp.address,
+        cp.category_id,
+        cp.parent_counterparty_id,
+        ct.depth + 1,
+        ct.sort_path || '/' || cp.name
+      FROM counterparties cp
+      INNER JOIN counterparty_tree ct ON cp.parent_counterparty_id = ct.id
+    ),
+    -- Calculate children totals for each parent
+    children_totals AS (
+      SELECT
+        parent_counterparty_id,
+        COALESCE(SUM(t.amount), 0) AS children_total_amount
+      FROM counterparties cp
+      LEFT JOIN transactions t ON t.counterparty_id = cp.id
+      WHERE cp.parent_counterparty_id IS NOT NULL
+      GROUP BY cp.parent_counterparty_id
+    )
+    SELECT
+      ct.id, ct.name, ct.address, ct.category_id, ct.parent_counterparty_id, ct.depth,
+      cat.name AS category_name,
+      cat.color AS category_color,
+      pc.name AS parent_counterparty_name,
+      COUNT(t.id) AS transaction_count,
+      COALESCE(SUM(t.amount), 0) AS total_amount,
+      COALESCE(cht.children_total_amount, 0) AS children_total_amount
+    FROM counterparty_tree ct
+    LEFT JOIN categories cat ON ct.category_id = cat.id
+    LEFT JOIN counterparties pc ON ct.parent_counterparty_id = pc.id
+    LEFT JOIN transactions t ON t.counterparty_id = ct.id
+    LEFT JOIN children_totals cht ON cht.parent_counterparty_id = ct.id
+    ${whereClause.replace("c.", "ct.")}
+    GROUP BY ct.id
+    ORDER BY ct.sort_path
+  `
+    )
+    .all(...params) as CounterpartyWithStats[];
+
+  res.send(renderCounterpartiesListPage(counterparties, categories, categoryFilter, categoryTree, grouped));
+});
+
+// GET /counterparties/:id - View counterparty details
+router.get("/:id", (req, res) => {
+  const db = getDatabase();
+  const counterpartyId = Number(req.params.id);
+  const showChildTransactions = req.query.showChildTransactions === "true";
+
+  const counterparty = db
+    .prepare(
+      `
+    SELECT c.*, cat.name AS category_name, cat.color AS category_color, pc.name AS parent_counterparty_name
+    FROM counterparties c
+    LEFT JOIN categories cat ON c.category_id = cat.id
+    LEFT JOIN counterparties pc ON c.parent_counterparty_id = pc.id
+    WHERE c.id = ?
+  `
+    )
+    .get(counterpartyId) as (Counterparty & { category_name: string | null; category_color: string | null; parent_counterparty_name: string | null }) | undefined;
+
+  if (!counterparty) {
+    res.status(404).send("Counterparty not found");
+    return;
+  }
+
+  // Get transactions for this counterparty
+  const transactions = db
+    .prepare(
+      `
+    SELECT t.*, s.period AS statement_period, s.account AS statement_account
+    FROM transactions t
+    JOIN statements s ON t.statement_id = s.id
+    WHERE t.counterparty_id = ?
+    ORDER BY t.date DESC
+    LIMIT 100
+  `
+    )
+    .all(counterpartyId) as Array<{
+    id: number;
+    date: string;
+    amount: number;
+    reference_number: string;
+    statement_period: string;
+    statement_account: string;
+  }>;
+
+  const totalAmount = transactions.reduce((sum, t) => sum + t.amount, 0);
+
+  const allCategories = getCategoryTreeFlat();
+
+  // Get counterparty ancestors for breadcrumbs
+  const breadcrumbs = getCounterpartyAncestors(counterpartyId);
+
+  // Get potential parent counterparties (root counterparties only, excluding self)
+  const potentialParents = getRootCounterparties().filter((c) => c.id !== counterpartyId);
+
+  // Get child counterparties of this counterparty
+  const childCounterparties = db
+    .prepare("SELECT id, name FROM counterparties WHERE parent_counterparty_id = ? ORDER BY name")
+    .all(counterpartyId) as Array<{ id: number; name: string }>;
+
+  // Get child counterparty transactions if requested and this is a parent with no own transactions
+  let childCounterpartyTransactions: ChildCounterpartyTransactions[] = [];
+  const isParentWithNoOwnTransactions = childCounterparties.length > 0 && transactions.length === 0;
+
+  if (showChildTransactions && isParentWithNoOwnTransactions) {
+    childCounterpartyTransactions = childCounterparties.map((cc) => {
+      const ccTransactions = db
+        .prepare(
+          `
+        SELECT t.*, s.period AS statement_period, s.account AS statement_account
+        FROM transactions t
+        JOIN statements s ON t.statement_id = s.id
+        WHERE t.counterparty_id = ?
+        ORDER BY t.date DESC
+        LIMIT 100
+      `
+        )
+        .all(cc.id) as Array<{
+        id: number;
+        date: string;
+        amount: number;
+        reference_number: string;
+        statement_period: string;
+        statement_account: string;
+      }>;
+      const ccTotal = ccTransactions.reduce((sum, t) => sum + t.amount, 0);
+      return {
+        counterparty: cc,
+        transactions: ccTransactions,
+        totalAmount: ccTotal,
+      };
+    });
+  }
+
+  res.send(
+    renderCounterpartyDetailPage(
+      counterparty,
+      transactions,
+      totalAmount,
+      allCategories,
+      potentialParents,
+      childCounterparties,
+      isParentWithNoOwnTransactions,
+      showChildTransactions,
+      childCounterpartyTransactions,
+      breadcrumbs
+    )
+  );
+});
+
+// POST /counterparties/:id/categorize - Assign category to counterparty and all descendants
+router.post("/:id/categorize", (req, res) => {
+  const counterpartyId = Number(req.params.id);
+  const categoryIdRaw = req.body.category_id;
+  const categoryId =
+    categoryIdRaw && categoryIdRaw !== "" ? Number(categoryIdRaw) : UNCATEGORIZED_CATEGORY_ID;
+
+  // Update counterparty and all descendants with the same category
+  updateCounterpartyCategoryWithDescendants(counterpartyId, categoryId);
+
+  // Redirect back based on where the request came from
+  const returnTo = req.body.return_to;
+  if (returnTo === "uncategorized") {
+    res.redirect("/counterparties?category=uncategorized");
+  } else if (returnTo === "list") {
+    res.redirect("/counterparties");
+  } else if (returnTo && returnTo.startsWith("/")) {
+    // Allow arbitrary paths that start with / (e.g., analysis pages)
+    res.redirect(returnTo);
+  } else {
+    res.redirect(`/counterparties/${counterpartyId}`);
+  }
+});
+
+// POST /counterparties/:id/reparent - Set parent counterparty
+router.post("/:id/reparent", (req, res) => {
+  const db = getDatabase();
+  const counterpartyId = Number(req.params.id);
+  const parentIdRaw = req.body.parent_counterparty_id;
+  const parentCounterpartyId = parentIdRaw && parentIdRaw !== "" ? Number(parentIdRaw) : null;
+
+  // Get current parent before update
+  const currentCounterparty = db
+    .prepare("SELECT parent_counterparty_id FROM counterparties WHERE id = ?")
+    .get(counterpartyId) as { parent_counterparty_id: number | null } | undefined;
+  const oldParentId = currentCounterparty?.parent_counterparty_id ?? null;
+
+  // Check for cycle if setting a parent
+  if (parentCounterpartyId !== null && wouldCreateCounterpartyCycle(counterpartyId, parentCounterpartyId)) {
+    res.status(400).send("Cannot set parent: would create a cycle");
+    return;
+  }
+
+  db.prepare("UPDATE counterparties SET parent_counterparty_id = ? WHERE id = ?").run(
+    parentCounterpartyId,
+    counterpartyId
+  );
+
+  // If removing from a parent, check if old parent should be auto-deleted
+  // (when it has no remaining children and no transactions of its own)
+  let oldParentDeleted = false;
+  if (oldParentId !== null && oldParentId !== parentCounterpartyId) {
+    const childCount = db
+      .prepare("SELECT COUNT(*) as cnt FROM counterparties WHERE parent_counterparty_id = ?")
+      .get(oldParentId) as { cnt: number };
+
+    if (childCount.cnt === 0) {
+      const transactionCount = db
+        .prepare("SELECT COUNT(*) as cnt FROM transactions WHERE counterparty_id = ?")
+        .get(oldParentId) as { cnt: number };
+
+      if (transactionCount.cnt === 0) {
+        db.prepare("DELETE FROM counterparties WHERE id = ?").run(oldParentId);
+        oldParentDeleted = true;
+      }
+    }
+  }
+
+  // When adding to a parent, redirect to the new parent
+  // When removing from a parent, redirect to the old parent (unless it was deleted)
+  if (parentCounterpartyId !== null) {
+    res.redirect(`/counterparties/${parentCounterpartyId}`);
+  } else if (oldParentId !== null && !oldParentDeleted) {
+    res.redirect(`/counterparties/${oldParentId}`);
+  } else {
+    res.redirect(`/counterparties/${counterpartyId}`);
+  }
+});
+
+// POST /counterparties/bulk-categorize - Assign category to multiple counterparties
+router.post("/bulk-categorize", (req, res) => {
+  const db = getDatabase();
+  const counterpartyIds: number[] = Array.isArray(req.body.counterparty_ids)
+    ? req.body.counterparty_ids.map(Number)
+    : req.body.counterparty_ids
+      ? [Number(req.body.counterparty_ids)]
+      : [];
+  const categoryIdRaw = req.body.category_id;
+  const categoryId =
+    categoryIdRaw && categoryIdRaw !== "" ? Number(categoryIdRaw) : UNCATEGORIZED_CATEGORY_ID;
+
+  if (counterpartyIds.length > 0 && categoryId !== null) {
+    const placeholders = counterpartyIds.map(() => "?").join(",");
+    db.prepare(
+      `UPDATE counterparties SET category_id = ? WHERE id IN (${placeholders})`
+    ).run(categoryId, ...counterpartyIds);
+  }
+
+  res.redirect("/counterparties?category=uncategorized");
+});
+
+// POST /counterparties/group - Create a new parent counterparty and group selected counterparties under it
+router.post("/group", (req, res) => {
+  const db = getDatabase();
+  const counterpartyIds: number[] = Array.isArray(req.body.counterparty_ids)
+    ? req.body.counterparty_ids.map(Number)
+    : req.body.counterparty_ids
+      ? [Number(req.body.counterparty_ids)]
+      : [];
+  const parentName = (req.body.parent_name || "").trim();
+  const categoryIdRaw = req.body.category_id;
+  const categoryId =
+    categoryIdRaw && categoryIdRaw !== "" ? Number(categoryIdRaw) : UNCATEGORIZED_CATEGORY_ID;
+
+  // Validate inputs
+  if (counterpartyIds.length < 2) {
+    res.redirect("/counterparties?error=Select at least 2 counterparties to group");
+    return;
+  }
+
+  if (!parentName) {
+    res.redirect("/counterparties?error=Parent counterparty name is required");
+    return;
+  }
+
+  db.transaction(() => {
+    // Check if a counterparty with this name already exists
+    const existingCounterparty = db
+      .prepare("SELECT id, category_id FROM counterparties WHERE name = ?")
+      .get(parentName) as { id: number; category_id: number } | undefined;
+
+    let parentId: number;
+    let effectiveCategoryId: number;
+
+    if (existingCounterparty) {
+      // Don't allow using an existing counterparty as the parent if it's one of the selected children
+      if (counterpartyIds.includes(existingCounterparty.id)) {
+        throw new Error("Parent name matches one of the selected counterparties");
+      }
+      parentId = existingCounterparty.id;
+      // If a category was specified, update the parent; otherwise use the parent's existing category
+      if (categoryId !== UNCATEGORIZED_CATEGORY_ID) {
+        db.prepare("UPDATE counterparties SET category_id = ? WHERE id = ?").run(categoryId, parentId);
+        effectiveCategoryId = categoryId;
+      } else {
+        effectiveCategoryId = existingCounterparty.category_id;
+      }
+    } else {
+      // Create a new parent counterparty
+      // If no category specified, apply categorization rules to the parent name
+      let newParentCategoryId = categoryId;
+      if (categoryId === UNCATEGORIZED_CATEGORY_ID) {
+        const ruleResult = applyCategorizationRules(db, parentName);
+        newParentCategoryId = ruleResult.categoryId ?? UNCATEGORIZED_CATEGORY_ID;
+      }
+      const parentResult = db
+        .prepare("INSERT INTO counterparties (name, category_id) VALUES (?, ?)")
+        .run(parentName, newParentCategoryId);
+      parentId = Number(parentResult.lastInsertRowid);
+      effectiveCategoryId = newParentCategoryId;
+    }
+
+    // Update child counterparties to point to the parent and inherit the parent's category
+    const placeholders = counterpartyIds.map(() => "?").join(",");
+    db.prepare(
+      `UPDATE counterparties SET parent_counterparty_id = ?, category_id = ? WHERE id IN (${placeholders})`
+    ).run(parentId, effectiveCategoryId, ...counterpartyIds);
+  })();
+
+  res.redirect("/counterparties");
+});
+
+// POST /counterparties/merge - Merge two counterparty groups into one
+router.post("/merge", (req, res) => {
+  const db = getDatabase();
+  const keepParentId = Number(req.body.keep_parent_id);
+  const mergeParentId = Number(req.body.merge_parent_id);
+
+  if (!keepParentId || !mergeParentId || keepParentId === mergeParentId) {
+    res.status(400).send("Invalid merge request");
+    return;
+  }
+
+  db.transaction(() => {
+    // Get the category of the parent we're keeping
+    const keepParent = db
+      .prepare("SELECT category_id FROM counterparties WHERE id = ?")
+      .get(keepParentId) as { category_id: number } | undefined;
+
+    if (!keepParent) {
+      throw new Error("Keep parent not found");
+    }
+
+    const keepCategoryId = keepParent.category_id;
+
+    // Move all children of the merge parent to the keep parent
+    // and update their category to match the new parent
+    db.prepare(
+      "UPDATE counterparties SET parent_counterparty_id = ?, category_id = ? WHERE parent_counterparty_id = ?"
+    ).run(keepParentId, keepCategoryId, mergeParentId);
+
+    // Check if the merge parent has any transactions of its own
+    const mergeParentTransactions = db
+      .prepare("SELECT COUNT(*) as cnt FROM transactions WHERE counterparty_id = ?")
+      .get(mergeParentId) as { cnt: number };
+
+    if (mergeParentTransactions.cnt > 0) {
+      // The merge parent has transactions, so convert it to a child of keep parent
+      db.prepare(
+        "UPDATE counterparties SET parent_counterparty_id = ?, category_id = ? WHERE id = ?"
+      ).run(keepParentId, keepCategoryId, mergeParentId);
+    } else {
+      // The merge parent has no transactions, delete it
+      db.prepare("DELETE FROM counterparties WHERE id = ?").run(mergeParentId);
+    }
+  })();
+
+  res.redirect(`/counterparties/${keepParentId}`);
+});
+
+// POST /counterparties/suggest-groupings - Analyze all counterparties and show grouping suggestions
+router.post("/suggest-groupings", (_req, res) => {
+  const db = getDatabase();
+
+  // Get all ungrouped counterparties (no parent)
+  const counterparties = db
+    .prepare("SELECT id, name, parent_counterparty_id FROM counterparties WHERE parent_counterparty_id IS NULL")
+    .all() as CounterpartyInfo[];
+
+  // Get existing parent counterparties for potential matching
+  const existingParents = getRootCounterparties();
+
+  // Get parents that already have children (for sibling matching)
+  const parentsWithChildren = getParentCounterpartiesWithChildren();
+
+  // Generate suggestions (enable debug logging for inspection)
+  const suggestions = suggestCounterpartyGroupings(counterparties, existingParents, parentsWithChildren, { debug: true });
+
+  // Convert to display format
+  const groupingSuggestions: GroupingSuggestionDisplay[] = suggestions.map((s, idx) => ({
+    suggestionId: `group_${idx}`,
+    parentName: s.parentName,
+    childCounterpartyIds: s.childCounterpartyIds,
+    childCounterpartyNames: s.childCounterpartyNames,
+    normalizedForm: s.normalizedForm,
+  }));
+
+  res.send(renderCounterpartyGroupingsPage(groupingSuggestions));
+});
+
+// POST /counterparties/apply-groupings - Apply selected counterparty groupings
+router.post("/apply-groupings", (req, res) => {
+  const db = getDatabase();
+
+  let appliedCount = 0;
+
+  db.transaction(() => {
+    // Process each potential grouping
+    let groupIndex = 0;
+    while (req.body[`group_${groupIndex}_counterparty_ids`] !== undefined) {
+      const isAccepted = req.body[`accept_group_${groupIndex}`] === "1";
+
+      if (isAccepted) {
+        const counterpartyIdsStr = req.body[`group_${groupIndex}_counterparty_ids`] as string;
+        const parentName = req.body[`group_${groupIndex}_parent_name`] as string;
+        const counterpartyIds = counterpartyIdsStr.split(",").map(Number);
+
+        if (parentName) {
+          // Check if a counterparty with this name already exists
+          const existingCounterparty = db
+            .prepare("SELECT id, category_id FROM counterparties WHERE name = ?")
+            .get(parentName) as { id: number; category_id: number } | undefined;
+
+          let parentId: number;
+          let parentCategoryId: number;
+
+          if (existingCounterparty) {
+            // Use existing counterparty as parent (if it's not one of the children)
+            if (!counterpartyIds.includes(existingCounterparty.id)) {
+              parentId = existingCounterparty.id;
+              parentCategoryId = existingCounterparty.category_id;
+            } else {
+              // Skip this group - parent name matches a child
+              groupIndex++;
+              continue;
+            }
+          } else {
+            // Create a new parent counterparty with the canonical name
+            // Apply categorization rules to determine initial category
+            const ruleResult = applyCategorizationRules(db, parentName);
+            const newCategoryId = ruleResult.categoryId ?? UNCATEGORIZED_CATEGORY_ID;
+            const parentResult = db
+              .prepare("INSERT INTO counterparties (name, category_id) VALUES (?, ?)")
+              .run(parentName, newCategoryId);
+            parentId = Number(parentResult.lastInsertRowid);
+            parentCategoryId = newCategoryId;
+          }
+
+          // Update child counterparties to point to the parent and inherit the parent's category
+          const placeholders = counterpartyIds.map(() => "?").join(",");
+          db.prepare(
+            `UPDATE counterparties SET parent_counterparty_id = ?, category_id = ? WHERE id IN (${placeholders})`
+          ).run(parentId, parentCategoryId, ...counterpartyIds);
+
+          appliedCount++;
+        }
+      }
+
+      groupIndex++;
+    }
+  })();
+
+  res.redirect(`/counterparties?grouped=${appliedCount}`);
+});
+
+// ============================================================================
+// Render Functions
+// ============================================================================
+
+function renderCounterpartyBreadcrumbs(counterparties: CounterpartyFromQueries[]): string {
+  const links = counterparties.map((c, i) => {
+    const isLast = i === counterparties.length - 1;
+    if (isLast) {
+      return `<span class="text-gray-900 dark:text-gray-100">${escapeHtml(c.name)}</span>`;
+    }
+    return `<a href="/counterparties/${c.id}" class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">${escapeHtml(c.name)}</a>`;
+  });
+
+  return `
+    <nav class="flex items-center gap-2 text-sm mb-4">
+      <a href="/counterparties" class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">Counterparties</a>
+      <span class="text-gray-400">/</span>
+      ${links.join('<span class="text-gray-400">/</span>')}
+    </nav>
+  `;
+}
+
+function renderCounterpartiesListPage(
+  counterparties: CounterpartyWithStats[],
+  categories: Category[],
+  currentFilter: string | null,
+  categoryTree: CategoryWithDepth[],
+  grouped: number | null
+): string {
+  // Convert category tree to CategoryOption format for inline select
+  const inlineSelectCategories: CategoryOption[] = categoryTree.map((c) => ({
+    id: c.id,
+    name: c.name,
+    depth: c.depth,
+  }));
+  const inputClasses =
+    "px-4 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-200 dark:focus:ring-gray-700 focus:border-gray-300 dark:focus:border-gray-600 transition-colors";
+
+  // Success message for applied groupings
+  const groupedMessage =
+    grouped !== null
+      ? `
+    <div class="mb-6 px-4 py-3 text-sm rounded-lg bg-green-50 text-green-700 border border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800">
+      Applied ${grouped} counterparty grouping${grouped === 1 ? "" : "s"}.
+    </div>
+  `
+      : "";
+
+  const categoryOptions = [
+    `<option value=""${currentFilter === null || currentFilter === "" ? " selected" : ""}>All Categories</option>`,
+    `<option value="uncategorized"${currentFilter === "uncategorized" ? " selected" : ""}>Uncategorized</option>`,
+    ...categories.map((cat) =>
+      `<option value="${cat.id}"${currentFilter === String(cat.id) ? " selected" : ""}>${escapeHtml(cat.name)}</option>`
+    ),
+  ].join("");
+
+  const filterHtml = `
+    <form method="GET" class="mb-6">
+      <div class="flex items-center gap-3">
+        <label class="text-sm font-medium text-gray-500 dark:text-gray-400" for="category">Filter by category:</label>
+        <select class="${inputClasses}" id="category" name="category" onchange="this.form.submit()">
+          ${categoryOptions}
+        </select>
+      </div>
+    </form>
+  `;
+
+  // Category options for the grouping form
+  const groupCategoryOptions = categoryTree
+    .map((c) => {
+      const indent = "\u00A0\u00A0".repeat(c.depth);
+      return `<option value="${c.id}">${indent}${escapeHtml(c.name)}</option>`;
+    })
+    .join("");
+
+  // Build counterparty rows with checkboxes
+  const counterpartyRowsHtml = counterparties.length === 0
+    ? `<tr><td colspan="5" class="px-6 py-8 text-center text-gray-400 dark:text-gray-500">${currentFilter ? "No counterparties match this filter." : "No counterparties yet."}</td></tr>`
+    : counterparties.map((c) => {
+        const indent = "\u00A0\u00A0\u00A0\u00A0".repeat(c.depth);
+        const prefix = c.depth > 0 ? "\u2514 " : "";
+        // Only allow selecting root counterparties that don't have children
+        const hasChildren = counterparties.some((oc) => oc.parent_counterparty_id === c.id);
+        const isParent = c.parent_counterparty_id === null && hasChildren;
+        const isChild = c.depth > 0;
+        const canSelect = c.parent_counterparty_id === null && !hasChildren;
+
+        const checkbox = canSelect
+          ? `<input type="checkbox" name="counterparty_ids" value="${c.id}" class="counterparty-checkbox h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500 dark:bg-gray-800" />`
+          : `<span class="w-4 h-4 inline-block"></span>`;
+
+        const categoryCell = renderInlineCategorySelect({
+          counterpartyId: c.id,
+          currentCategoryId: c.category_id,
+          currentCategoryName: c.category_name,
+          currentCategoryColor: c.category_color,
+          categories: inlineSelectCategories,
+        });
+
+        // Draggable: root counterparties (with or without children) can be dragged
+        const canBeDragged = c.parent_counterparty_id === null;
+        // Droppable: root counterparties (with or without children) can accept new children
+        const canAcceptChild = c.parent_counterparty_id === null;
+        // Is this counterparty an orphan (root with no children) or a parent (root with children)?
+        const isOrphan = c.parent_counterparty_id === null && !hasChildren;
+        const dragAttrs = canBeDragged
+          ? `draggable="true" data-counterparty-id="${c.id}" data-counterparty-name="${escapeHtml(c.name).replace(/"/g, "&quot;")}" data-has-children="${hasChildren}"`
+          : "";
+        const dropAttrs = canAcceptChild
+          ? `data-drop-target="true" data-parent-id="${c.id}" data-parent-name="${escapeHtml(c.name).replace(/"/g, "&quot;")}" data-is-orphan="${isOrphan}" data-has-children="${hasChildren}"`
+          : "";
+
+        // Collapse/expand toggle for parent counterparties
+        const toggleButton = isParent
+          ? `<button type="button" class="parent-toggle mr-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-transform" data-parent-id="${c.id}" aria-expanded="false">
+               <svg class="w-4 h-4 transform -rotate-90 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+               </svg>
+             </button>`
+          : "";
+
+        // For parents: show children total when collapsed, nothing when expanded
+        // For non-parents: show their own amount
+        const amountCell = isParent
+          ? `<span class="parent-amount-collapsed font-mono">${formatCurrency(c.children_total_amount + c.total_amount)}</span><span class="parent-amount-expanded hidden font-mono"></span>`
+          : `<span class="font-mono">${formatCurrency(c.total_amount)}</span>`;
+
+        // Child rows: hidden by default, include parent reference
+        const childAttrs = isChild
+          ? `data-child-of="${c.parent_counterparty_id}" style="display: none;"`
+          : "";
+        const parentAttr = isParent ? `data-is-parent="${c.id}"` : "";
+
+        return `
+          <tr class="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 counterparty-row" ${dragAttrs} ${dropAttrs} ${childAttrs} ${parentAttr}>
+            <td class="px-3 py-3 text-sm">
+              ${checkbox}
+            </td>
+            <td class="px-3 py-3 text-sm">
+              <span class="inline-flex items-center">
+                ${toggleButton}<a href="/counterparties/${c.id}" class="hover:underline">${indent}${prefix}${escapeHtml(c.name)}</a>
+              </span>
+            </td>
+            <td class="px-3 py-3 text-sm">${categoryCell}</td>
+            <td class="px-3 py-3 text-sm text-right">${c.transaction_count}</td>
+            <td class="px-3 py-3 text-sm text-right">${amountCell}</td>
+          </tr>
+        `;
+      }).join("");
+
+  const tableHtml = `
+    <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-sm overflow-hidden">
+      <table class="w-full">
+        <thead>
+          <tr class="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
+            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider w-10">
+              <input type="checkbox" id="select-all-counterparties" class="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500 dark:bg-gray-800" />
+            </th>
+            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Name</th>
+            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Category</th>
+            <th class="px-3 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Transactions</th>
+            <th class="px-3 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${counterpartyRowsHtml}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  // Group counterparties form (pinned to bottom, shown when counterparties selected)
+  const groupFormHtml = `
+    <div id="group-counterparties-panel" class="hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 shadow-lg p-4 z-50">
+      <form method="POST" action="/counterparties/group" id="group-counterparties-form" class="max-w-4xl mx-auto">
+        <div id="group-selected-inputs"></div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
+          <div>
+            <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1" for="parent_name">Parent Counterparty Name</label>
+            <input type="text" id="parent_name" name="parent_name" required placeholder="e.g., Amazon" class="${inputClasses} w-full" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1" for="group_category_id">Category (optional)</label>
+            <select id="group_category_id" name="category_id" class="${inputClasses} w-full">
+              <option value="">Uncategorized</option>
+              ${groupCategoryOptions}
+            </select>
+          </div>
+          <div>
+            <button type="submit" id="group-counterparties-btn" disabled class="w-full px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed dark:disabled:bg-gray-700 dark:disabled:text-gray-500 transition-colors">
+              Group Counterparties
+            </button>
+          </div>
+          <div class="flex items-center">
+            <span id="selected-count" class="text-sm text-gray-500 dark:text-gray-400">0 selected</span>
+          </div>
+        </div>
+      </form>
+    </div>
+  `;
+
+  // Modal for confirming adding a child to a parent via drag-and-drop
+  const addChildModalHtml = `
+    <div id="addChildModal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+      <div class="flex items-center justify-center min-h-screen px-4">
+        <div class="fixed inset-0 bg-black/30 dark:bg-black/50" onclick="hideAddChildModal()"></div>
+        <div class="relative bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 max-w-sm w-full shadow-lg">
+          <h3 class="text-lg font-medium mb-2">Add Child Counterparty</h3>
+          <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+            Add <span id="addChildName" class="font-medium text-gray-900 dark:text-gray-100"></span> as a child of <span id="addChildParentName" class="font-medium text-gray-900 dark:text-gray-100"></span>? The child will inherit the parent's category.
+          </p>
+          <form id="addChildForm" method="POST" class="flex gap-2 justify-end">
+            <input type="hidden" name="parent_counterparty_id" id="addChildParentId" value="">
+            <button type="button" onclick="hideAddChildModal()" class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors">
+              Cancel
+            </button>
+            <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
+              Add as Child
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Modal for creating a new group when dragging orphan onto orphan
+  const createGroupModalHtml = `
+    <div id="createGroupModal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+      <div class="flex items-center justify-center min-h-screen px-4">
+        <div class="fixed inset-0 bg-black/30 dark:bg-black/50" onclick="hideCreateGroupModal()"></div>
+        <div class="relative bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 max-w-md w-full shadow-lg">
+          <h3 class="text-lg font-medium mb-2">Create Counterparty Group</h3>
+          <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+            Group <span id="createGroupCounterparty1" class="font-medium text-gray-900 dark:text-gray-100"></span> and <span id="createGroupCounterparty2" class="font-medium text-gray-900 dark:text-gray-100"></span> under a new parent counterparty.
+          </p>
+          <form id="createGroupForm" method="POST" action="/counterparties/group">
+            <input type="hidden" name="counterparty_ids" id="createGroupCounterpartyId1" value="">
+            <input type="hidden" name="counterparty_ids" id="createGroupCounterpartyId2" value="">
+            <div class="space-y-4 mb-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="createGroupParentName">Parent Counterparty Name</label>
+                <input type="text" id="createGroupParentName" name="parent_name" required placeholder="e.g., Amazon" class="${inputClasses}" />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="createGroupCategory">Category (optional)</label>
+                <select id="createGroupCategory" name="category_id" class="${inputClasses}">
+                  <option value="">Uncategorized</option>
+                  ${groupCategoryOptions}
+                </select>
+              </div>
+            </div>
+            <div class="flex gap-2 justify-end">
+              <button type="button" onclick="hideCreateGroupModal()" class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors">
+                Cancel
+              </button>
+              <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
+                Create Group
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Modal for merging two parent counterparty groups
+  const mergeGroupsModalHtml = `
+    <div id="mergeGroupsModal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+      <div class="flex items-center justify-center min-h-screen px-4">
+        <div class="fixed inset-0 bg-black/30 dark:bg-black/50" onclick="hideMergeGroupsModal()"></div>
+        <div class="relative bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 max-w-md w-full shadow-lg">
+          <h3 class="text-lg font-medium mb-2">Merge Counterparty Groups</h3>
+          <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+            Merge <span id="mergeGroupCounterparty1" class="font-medium text-gray-900 dark:text-gray-100"></span> and <span id="mergeGroupCounterparty2" class="font-medium text-gray-900 dark:text-gray-100"></span> into a single counterparty group.
+          </p>
+          <form id="mergeGroupsForm" method="POST" action="/counterparties/merge">
+            <input type="hidden" name="merge_parent_id" id="mergeGroupMergeId" value="">
+            <div class="space-y-4 mb-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="mergeGroupKeepParent">Keep which parent?</label>
+                <select id="mergeGroupKeepParent" name="keep_parent_id" required class="${inputClasses}">
+                  <option value="" id="mergeGroupOption1"></option>
+                  <option value="" id="mergeGroupOption2"></option>
+                </select>
+              </div>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                All counterparties from the other group will be moved into the selected parent. The moved counterparties will inherit the selected parent's category.
+              </p>
+            </div>
+            <div class="flex gap-2 justify-end">
+              <button type="button" onclick="hideMergeGroupsModal()" class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors">
+                Cancel
+              </button>
+              <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
+                Merge Groups
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // JavaScript for handling counterparty selection, grouping, and drag-drop
+  const scriptHtml = `
+    <script>
+      (function() {
+        var checkboxes = document.querySelectorAll('.counterparty-checkbox');
+        var selectAllCheckbox = document.getElementById('select-all-counterparties');
+        var groupPanel = document.getElementById('group-counterparties-panel');
+        var selectedInputsContainer = document.getElementById('group-selected-inputs');
+        var selectedCount = document.getElementById('selected-count');
+        var groupBtn = document.getElementById('group-counterparties-btn');
+        var parentNameInput = document.getElementById('parent_name');
+
+        function updateUI() {
+          var selected = Array.from(checkboxes).filter(function(cb) { return cb.checked; });
+          var count = selected.length;
+          var hasName = parentNameInput.value.trim().length > 0;
+
+          // Show/hide panel based on selection
+          if (count >= 1) {
+            groupPanel.classList.remove('hidden');
+          } else {
+            groupPanel.classList.add('hidden');
+          }
+
+          // Enable button only if 2+ counterparties selected AND parent name entered
+          groupBtn.disabled = !(count >= 2 && hasName);
+
+          // Update selected count display
+          selectedCount.textContent = count + ' selected';
+
+          // Update hidden inputs for form submission
+          selectedInputsContainer.innerHTML = selected.map(function(cb) {
+            return '<input type="hidden" name="counterparty_ids" value="' + cb.value + '" />';
+          }).join('');
+
+          // Update select all checkbox state
+          if (count === 0) {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = false;
+          } else if (count === checkboxes.length) {
+            selectAllCheckbox.checked = true;
+            selectAllCheckbox.indeterminate = false;
+          } else {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = true;
+          }
+        }
+
+        // Handle individual checkbox changes
+        checkboxes.forEach(function(cb) {
+          cb.addEventListener('change', updateUI);
+        });
+
+        // Handle parent name input changes
+        parentNameInput.addEventListener('input', updateUI);
+
+        // Handle select all
+        selectAllCheckbox.addEventListener('change', function() {
+          var isChecked = this.checked;
+          checkboxes.forEach(function(cb) {
+            cb.checked = isChecked;
+          });
+          updateUI();
+        });
+
+        // Initial state
+        updateUI();
+
+        // ===============================
+        // Drag and drop for adding children to parents
+        // ===============================
+        var draggableRows = document.querySelectorAll('tr[draggable="true"]');
+        var dropTargets = document.querySelectorAll('tr[data-drop-target="true"]');
+        var draggedCounterpartyId = null;
+        var draggedCounterpartyName = null;
+        var draggedHasChildren = false;
+
+        draggableRows.forEach(function(row) {
+          row.addEventListener('dragstart', function(e) {
+            draggedCounterpartyId = row.dataset.counterpartyId;
+            draggedCounterpartyName = row.dataset.counterpartyName;
+            draggedHasChildren = row.dataset.hasChildren === 'true';
+            row.classList.add('opacity-50');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', draggedCounterpartyId);
+          });
+
+          row.addEventListener('dragend', function() {
+            row.classList.remove('opacity-50');
+            draggedCounterpartyId = null;
+            draggedCounterpartyName = null;
+            draggedHasChildren = false;
+            // Remove all drop highlights
+            dropTargets.forEach(function(target) {
+              target.classList.remove('bg-green-50', 'dark:bg-green-900/20', 'ring-2', 'ring-green-500', 'ring-inset');
+            });
+          });
+        });
+
+        dropTargets.forEach(function(target) {
+          target.addEventListener('dragover', function(e) {
+            // Only allow drop if not dropping on itself
+            if (target.dataset.parentId !== draggedCounterpartyId) {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              target.classList.add('bg-green-50', 'dark:bg-green-900/20', 'ring-2', 'ring-green-500', 'ring-inset');
+            }
+          });
+
+          target.addEventListener('dragleave', function(e) {
+            // Only remove highlight if leaving the row (not just moving between cells)
+            if (!target.contains(e.relatedTarget)) {
+              target.classList.remove('bg-green-50', 'dark:bg-green-900/20', 'ring-2', 'ring-green-500', 'ring-inset');
+            }
+          });
+
+          target.addEventListener('drop', function(e) {
+            e.preventDefault();
+            target.classList.remove('bg-green-50', 'dark:bg-green-900/20', 'ring-2', 'ring-green-500', 'ring-inset');
+
+            // Don't allow dropping on self
+            if (target.dataset.parentId === draggedCounterpartyId) {
+              return;
+            }
+
+            var targetHasChildren = target.dataset.hasChildren === 'true';
+
+            // Both have children: merge groups
+            if (draggedHasChildren && targetHasChildren) {
+              showMergeGroupsModal(draggedCounterpartyId, draggedCounterpartyName, target.dataset.parentId, target.dataset.parentName);
+            }
+            // Target is orphan (no children) and dragged is also orphan: create new group
+            else if (target.dataset.isOrphan === 'true' && !draggedHasChildren) {
+              showCreateGroupModal(draggedCounterpartyId, draggedCounterpartyName, target.dataset.parentId, target.dataset.parentName);
+            }
+            // Otherwise: add as child to existing parent
+            else {
+              showAddChildModal(draggedCounterpartyId, draggedCounterpartyName, target.dataset.parentId, target.dataset.parentName);
+            }
+          });
+        });
+      })();
+
+      // Modal functions for adding child to parent
+      function showAddChildModal(childId, childName, parentId, parentName) {
+        document.getElementById('addChildName').textContent = childName;
+        document.getElementById('addChildParentName').textContent = parentName;
+        document.getElementById('addChildParentId').value = parentId;
+        document.getElementById('addChildForm').action = '/counterparties/' + childId + '/reparent';
+        document.getElementById('addChildModal').classList.remove('hidden');
+      }
+
+      function hideAddChildModal() {
+        document.getElementById('addChildModal').classList.add('hidden');
+      }
+
+      // Modal functions for creating a new group from two orphan counterparties
+      function showCreateGroupModal(counterparty1Id, counterparty1Name, counterparty2Id, counterparty2Name) {
+        document.getElementById('createGroupCounterparty1').textContent = counterparty1Name;
+        document.getElementById('createGroupCounterparty2').textContent = counterparty2Name;
+        document.getElementById('createGroupCounterpartyId1').value = counterparty1Id;
+        document.getElementById('createGroupCounterpartyId2').value = counterparty2Id;
+        document.getElementById('createGroupParentName').value = '';
+        document.getElementById('createGroupCategory').value = '';
+        document.getElementById('createGroupModal').classList.remove('hidden');
+        // Focus the parent name input
+        document.getElementById('createGroupParentName').focus();
+      }
+
+      function hideCreateGroupModal() {
+        document.getElementById('createGroupModal').classList.add('hidden');
+      }
+
+      // Modal functions for merging two parent counterparty groups
+      var mergeCounterparty1Id = null;
+      var mergeCounterparty1Name = null;
+      var mergeCounterparty2Id = null;
+      var mergeCounterparty2Name = null;
+
+      function showMergeGroupsModal(counterparty1Id, counterparty1Name, counterparty2Id, counterparty2Name) {
+        mergeCounterparty1Id = counterparty1Id;
+        mergeCounterparty1Name = counterparty1Name;
+        mergeCounterparty2Id = counterparty2Id;
+        mergeCounterparty2Name = counterparty2Name;
+
+        document.getElementById('mergeGroupCounterparty1').textContent = counterparty1Name;
+        document.getElementById('mergeGroupCounterparty2').textContent = counterparty2Name;
+
+        // Set up the dropdown options
+        var option1 = document.getElementById('mergeGroupOption1');
+        var option2 = document.getElementById('mergeGroupOption2');
+        option1.value = counterparty1Id;
+        option1.textContent = counterparty1Name;
+        option2.value = counterparty2Id;
+        option2.textContent = counterparty2Name;
+
+        // Select the first option by default and update the hidden field
+        var select = document.getElementById('mergeGroupKeepParent');
+        select.value = counterparty1Id;
+        updateMergeHiddenField();
+
+        document.getElementById('mergeGroupsModal').classList.remove('hidden');
+      }
+
+      function hideMergeGroupsModal() {
+        document.getElementById('mergeGroupsModal').classList.add('hidden');
+      }
+
+      function updateMergeHiddenField() {
+        var select = document.getElementById('mergeGroupKeepParent');
+        var keepId = select.value;
+        // The merge_parent_id is the one NOT selected (the one being merged into the other)
+        var mergeId = (keepId === mergeCounterparty1Id) ? mergeCounterparty2Id : mergeCounterparty1Id;
+        document.getElementById('mergeGroupMergeId').value = mergeId;
+      }
+
+      // Add change listener to the dropdown
+      document.getElementById('mergeGroupKeepParent').addEventListener('change', updateMergeHiddenField);
+
+      // ===============================
+      // Parent counterparty collapse/expand functionality
+      // ===============================
+      (function() {
+        var toggleButtons = document.querySelectorAll('.parent-toggle');
+
+        toggleButtons.forEach(function(btn) {
+          btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            var parentId = btn.dataset.parentId;
+            var isExpanded = btn.getAttribute('aria-expanded') === 'true';
+            var childRows = document.querySelectorAll('tr[data-child-of="' + parentId + '"]');
+            var parentRow = document.querySelector('tr[data-is-parent="' + parentId + '"]');
+            var collapsedAmount = parentRow ? parentRow.querySelector('.parent-amount-collapsed') : null;
+            var expandedAmount = parentRow ? parentRow.querySelector('.parent-amount-expanded') : null;
+
+            if (isExpanded) {
+              // Collapse: hide children, show aggregated amount
+              btn.setAttribute('aria-expanded', 'false');
+              btn.querySelector('svg').classList.add('-rotate-90');
+              childRows.forEach(function(row) {
+                row.style.display = 'none';
+              });
+              if (collapsedAmount) collapsedAmount.classList.remove('hidden');
+              if (expandedAmount) expandedAmount.classList.add('hidden');
+            } else {
+              // Expand: show children, hide amount
+              btn.setAttribute('aria-expanded', 'true');
+              btn.querySelector('svg').classList.remove('-rotate-90');
+              childRows.forEach(function(row) {
+                row.style.display = '';
+              });
+              if (collapsedAmount) collapsedAmount.classList.add('hidden');
+              if (expandedAmount) expandedAmount.classList.remove('hidden');
+            }
+          });
+        });
+      })();
+    </script>
+  `;
+
+  const content = `
+    <div class="flex items-center justify-between mb-2">
+      <h1 class="text-2xl font-semibold">Counterparties</h1>
+      <form action="/counterparties/suggest-groupings" method="POST">
+        ${renderButton({ label: "Suggest Counterparty Groupings", type: "submit" })}
+      </form>
+    </div>
+    <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
+      A list of all the counterparties you've transacted with across all statements.
+      Select multiple root counterparties (without children) to group them under a new parent, or drag a counterparty onto another to add it as a child.
+    </p>
+    ${groupedMessage}
+    ${filterHtml}
+    ${tableHtml}
+    ${groupFormHtml}
+    ${addChildModalHtml}
+    ${createGroupModalHtml}
+    ${mergeGroupsModalHtml}
+    ${scriptHtml}
+  `;
+
+  return layout({ title: "Counterparties", content, activePath: "/counterparties" });
+}
+
+function renderCounterpartyDetailPage(
+  counterparty: Counterparty & { category_name: string | null; category_color: string | null; parent_counterparty_name: string | null },
+  transactions: Array<{
+    id: number;
+    date: string;
+    amount: number;
+    reference_number: string;
+    statement_period: string;
+    statement_account: string;
+  }>,
+  totalAmount: number,
+  allCategories: CategoryWithDepth[],
+  potentialParents: Array<{ id: number; name: string }>,
+  childCounterparties: Array<{ id: number; name: string }>,
+  isParentWithNoOwnTransactions: boolean,
+  showChildTransactions: boolean,
+  childCounterpartyTransactions: ChildCounterpartyTransactions[],
+  breadcrumbs: CounterpartyFromQueries[]
+): string {
+  const inputClasses =
+    "w-full px-4 py-2 text-base border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-200 dark:focus:ring-gray-700 focus:border-gray-300 dark:focus:border-gray-600 transition-colors";
+
+  const categoryOptions = allCategories
+    .map((c) => {
+      const indent = "\u00A0\u00A0".repeat(c.depth);
+      const selected = c.id === counterparty.category_id ? " selected" : "";
+      return `<option value="${c.id}"${selected}>${indent}${escapeHtml(c.name)}</option>`;
+    })
+    .join("");
+
+  const categoryFormHtml = `
+    <form method="POST" action="/counterparties/${counterparty.id}/categorize" class="flex items-end gap-2">
+      <div class="flex flex-col gap-1 flex-1">
+        <label class="text-sm font-medium text-gray-500 dark:text-gray-400" for="category_id">Category</label>
+        <select class="${inputClasses}" id="category_id" name="category_id">
+          <option value="">Uncategorized</option>
+          ${categoryOptions}
+        </select>
+      </div>
+      ${renderButton({ label: "Save", variant: "proceed", type: "submit" })}
+    </form>
+  `;
+
+  // Parent counterparty selector (only show if this counterparty has no children - can't make a parent into a child)
+  const canHaveParent = childCounterparties.length === 0;
+  const parentOptions = potentialParents
+    .map((p) => {
+      const selected = p.id === counterparty.parent_counterparty_id ? " selected" : "";
+      return `<option value="${p.id}"${selected}>${escapeHtml(p.name)}</option>`;
+    })
+    .join("");
+
+  const parentFormHtml = canHaveParent
+    ? `
+    <form method="POST" action="/counterparties/${counterparty.id}/reparent" class="flex items-end gap-2">
+      <div class="flex flex-col gap-1 flex-1">
+        <label class="text-sm font-medium text-gray-500 dark:text-gray-400" for="parent_counterparty_id">Parent Counterparty</label>
+        <select class="${inputClasses}" id="parent_counterparty_id" name="parent_counterparty_id">
+          <option value=""${counterparty.parent_counterparty_id === null ? " selected" : ""}>None (Root Counterparty)</option>
+          ${parentOptions}
+        </select>
+      </div>
+      ${renderButton({ label: "Save", variant: "proceed", type: "submit" })}
+    </form>
+  `
+    : `<p class="text-sm text-gray-500 dark:text-gray-400">This counterparty has child counterparties and cannot be moved under another parent.</p>`;
+
+  // Child counterparties list with remove buttons
+  const childCounterpartiesHtml =
+    childCounterparties.length > 0
+      ? `
+    <div class="mt-4">
+      <h3 class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Child Counterparties</h3>
+      <ul class="space-y-1">
+        ${childCounterparties
+          .map(
+            (cc) => `
+          <li class="flex items-center gap-2 group">
+            <a href="/counterparties/${cc.id}" class="text-sm hover:underline flex-1">${escapeHtml(cc.name)}</a>
+            <button
+              type="button"
+              onclick="showRemoveChildModal(${cc.id}, '${escapeHtml(cc.name).replace(/'/g, "\\'")}', ${counterparty.id})"
+              class="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-opacity"
+              title="Remove from parent"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </li>
+        `
+          )
+          .join("")}
+      </ul>
+    </div>
+
+    <!-- Remove Child Modal -->
+    <div id="removeChildModal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+      <div class="flex items-center justify-center min-h-screen px-4">
+        <div class="fixed inset-0 bg-black/30 dark:bg-black/50" onclick="hideRemoveChildModal()"></div>
+        <div class="relative bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 max-w-sm w-full shadow-lg">
+          <h3 class="text-lg font-medium mb-2">Remove Child Counterparty</h3>
+          <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+            Remove <span id="removeChildName" class="font-medium text-gray-900 dark:text-gray-100"></span> from this counterparty? Its category will be preserved.
+          </p>
+          <form id="removeChildForm" method="POST" class="flex gap-2 justify-end">
+            <input type="hidden" name="parent_counterparty_id" value="">
+            <button type="button" onclick="hideRemoveChildModal()" class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors">
+              Cancel
+            </button>
+            <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors">
+              Remove
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      function showRemoveChildModal(childId, childName, parentId) {
+        document.getElementById('removeChildName').textContent = childName;
+        document.getElementById('removeChildForm').action = '/counterparties/' + childId + '/reparent';
+        document.getElementById('removeChildModal').classList.remove('hidden');
+      }
+      function hideRemoveChildModal() {
+        document.getElementById('removeChildModal').classList.add('hidden');
+      }
+    </script>
+  `
+      : "";
+
+  const tableHtml = renderTable({
+    columns: [
+      { key: "date", label: "Date" },
+      { key: "statement_account", label: "Account" },
+      { key: "statement_period", label: "Period" },
+      {
+        key: "amount",
+        label: "Amount",
+        numeric: true,
+        render: (v) => formatCurrency(Number(v) || 0),
+      },
+    ],
+    rows: transactions,
+    emptyMessage: "No transactions for this counterparty.",
+  });
+
+  // Render child counterparty transactions grouped by counterparty with collapsible sections
+  const renderChildTransactionsHtml = (): string => {
+    if (!showChildTransactions || childCounterpartyTransactions.length === 0) {
+      return "";
+    }
+
+    const grandTotal = childCounterpartyTransactions.reduce((sum, cc) => sum + cc.totalAmount, 0);
+    const totalTransactionCount = childCounterpartyTransactions.reduce((sum, cc) => sum + cc.transactions.length, 0);
+
+    const counterpartySections = childCounterpartyTransactions.map((cc, index) => {
+      const transactionRows = cc.transactions.map((t) => `
+        <tr class="border-b border-gray-100 dark:border-gray-800">
+          <td class="px-6 py-3 text-sm">${t.date}</td>
+          <td class="px-6 py-3 text-sm">${t.statement_account}</td>
+          <td class="px-6 py-3 text-sm">${t.statement_period}</td>
+          <td class="px-6 py-3 text-sm text-right font-mono">${formatCurrency(t.amount)}</td>
+        </tr>
+      `).join("");
+
+      return `
+        <div class="border-b border-gray-200 dark:border-gray-800 last:border-b-0">
+          <button
+            type="button"
+            onclick="toggleCounterpartySection(${index})"
+            class="w-full px-6 py-4 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
+          >
+            <div class="flex items-center gap-3">
+              <svg id="chevron-${index}" class="w-4 h-4 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+              </svg>
+              <span class="font-semibold text-gray-900 dark:text-gray-100">
+                <a href="/counterparties/${cc.counterparty.id}" class="hover:underline" onclick="event.stopPropagation()">${escapeHtml(cc.counterparty.name)}</a>
+              </span>
+              <span class="text-sm text-gray-500 dark:text-gray-400">(${cc.transactions.length} transactions)</span>
+            </div>
+            <span class="font-semibold font-mono text-gray-900 dark:text-gray-100">${formatCurrency(cc.totalAmount)}</span>
+          </button>
+          <div id="counterparty-section-${index}" class="overflow-hidden">
+            <table class="w-full">
+              <tbody>
+                ${transactionRows}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    return `
+      <div class="flex gap-6 text-sm text-gray-500 dark:text-gray-400 mb-6">
+        <span><span class="font-medium text-gray-900 dark:text-gray-100">Total Transactions:</span> ${totalTransactionCount}</span>
+        <span><span class="font-medium text-gray-900 dark:text-gray-100">Grand Total:</span> ${formatCurrency(grandTotal)}</span>
+      </div>
+
+      <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-sm overflow-hidden">
+        <div class="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 px-6 py-3 flex items-center justify-between">
+          <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Child Counterparty Transactions</span>
+          <div class="flex gap-2">
+            <button type="button" onclick="expandAllSections()" class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Expand All</button>
+            <span class="text-gray-300 dark:text-gray-600">|</span>
+            <button type="button" onclick="collapseAllSections()" class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Collapse All</button>
+          </div>
+        </div>
+        ${counterpartySections}
+      </div>
+
+      <script>
+        var counterpartySectionCount = ${childCounterpartyTransactions.length};
+
+        function toggleCounterpartySection(index) {
+          var section = document.getElementById('counterparty-section-' + index);
+          var chevron = document.getElementById('chevron-' + index);
+          if (section.style.maxHeight && section.style.maxHeight !== '0px') {
+            section.style.maxHeight = '0px';
+            chevron.classList.remove('-rotate-180');
+          } else {
+            section.style.maxHeight = section.scrollHeight + 'px';
+            chevron.classList.add('-rotate-180');
+          }
+        }
+
+        function expandAllSections() {
+          for (var i = 0; i < counterpartySectionCount; i++) {
+            var section = document.getElementById('counterparty-section-' + i);
+            var chevron = document.getElementById('chevron-' + i);
+            section.style.maxHeight = section.scrollHeight + 'px';
+            chevron.classList.add('-rotate-180');
+          }
+        }
+
+        function collapseAllSections() {
+          for (var i = 0; i < counterpartySectionCount; i++) {
+            var section = document.getElementById('counterparty-section-' + i);
+            var chevron = document.getElementById('chevron-' + i);
+            section.style.maxHeight = '0px';
+            chevron.classList.remove('-rotate-180');
+          }
+        }
+
+        // Initialize all sections as expanded
+        document.addEventListener('DOMContentLoaded', function() {
+          expandAllSections();
+        });
+      </script>
+    `;
+  };
+
+  // Show child transactions button for parents with no own transactions
+  const showChildTransactionsButtonHtml = isParentWithNoOwnTransactions && !showChildTransactions
+    ? `
+      <div class="text-center py-8">
+        <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">This counterparty has no transactions of its own, but has ${childCounterparties.length} child counterparty(ies).</p>
+        ${renderLinkButton({ label: "Show Child Transactions", href: `/counterparties/${counterparty.id}?showChildTransactions=true` })}
+      </div>
+    `
+    : "";
+
+  // Determine which transaction section to show
+  const transactionSectionHtml = showChildTransactions && isParentWithNoOwnTransactions
+    ? renderChildTransactionsHtml()
+    : showChildTransactionsButtonHtml || `
+      <div class="flex gap-6 text-sm text-gray-500 dark:text-gray-400 mb-6">
+        <span><span class="font-medium text-gray-900 dark:text-gray-100">Transactions:</span> ${transactions.length}</span>
+        <span><span class="font-medium text-gray-900 dark:text-gray-100">Total:</span> ${formatCurrency(totalAmount)}</span>
+      </div>
+      ${tableHtml}
+    `;
+
+  const categoryBadge = counterparty.category_name
+    ? renderCategoryPill({
+        name: counterparty.category_name,
+        color: counterparty.category_color,
+        categoryId: counterparty.category_id,
+      })
+    : renderUncategorizedPill();
+
+  const breadcrumbHtml = renderCounterpartyBreadcrumbs(breadcrumbs);
+
+  const content = `
+    ${breadcrumbHtml}
+    <div class="mb-6">
+      <h1 class="text-2xl font-semibold mb-2">${escapeHtml(counterparty.name)}</h1>
+      <div class="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
+        ${counterparty.address ? `<span>${escapeHtml(counterparty.address)}</span><span>·</span>` : ""}
+        ${categoryBadge}
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+      <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6">
+        <h2 class="text-lg font-medium mb-4">Assign Category</h2>
+        ${categoryFormHtml}
+      </div>
+
+      <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6">
+        <h2 class="text-lg font-medium mb-4">Counterparty Hierarchy</h2>
+        ${parentFormHtml}
+        ${childCounterpartiesHtml}
+      </div>
+    </div>
+
+    ${transactionSectionHtml}
+  `;
+
+  return layout({
+    title: counterparty.name,
+    content,
+    activePath: "/counterparties",
+  });
+}
+
+function renderCounterpartyGroupingsPage(suggestions: GroupingSuggestionDisplay[]): string {
+  const noSuggestionsHtml = `
+    <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-sm">
+      <div class="px-12 py-8 text-center text-gray-400 dark:text-gray-500">
+        No counterparty grouping suggestions found. All counterparties appear to be unique or already grouped.
+      </div>
+    </div>
+  `;
+
+  const suggestionsHtml =
+    suggestions.length === 0
+      ? noSuggestionsHtml
+      : renderCounterpartyGroupingReview({
+          suggestions,
+          formAction: "/counterparties/apply-groupings",
+          showNormalizedForm: true,
+        });
+
+  const content = `
+    <div class="mb-6">
+      <h1 class="text-2xl font-semibold">Counterparty Grouping Suggestions</h1>
+    </div>
+
+    <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
+      This page identifies counterparties that may be from the same merchant based on name similarity.
+      Applying a grouping creates a parent counterparty with a cleaned name (no numbers or special characters).
+    </p>
+
+    ${suggestionsHtml}
+
+    <div class="mt-6">
+      ${renderLinkButton({ label: "\u2190 Back to Counterparties", href: "/counterparties" })}
+    </div>
+  `;
+
+  return layout({ title: "Counterparty Groupings", content, activePath: "/counterparties" });
+}
+
+export default router;
