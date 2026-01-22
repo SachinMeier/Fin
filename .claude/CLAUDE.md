@@ -53,6 +53,12 @@ This guide contains authoritative rules for:
 
 - **NEVER** auto-populate new database fields/schema with seed data unless explicitly asked
 
+### Running the Dev Server
+
+- **NEVER** run the app on port 3000 — the user runs their own instance on that port
+- When running the server for testing, use: `PORT=3001 npm run dev`
+- The port is configurable via the `PORT` environment variable
+
 ## TypeScript Configuration
 
 - **Strict mode enabled** - All type checks enforced

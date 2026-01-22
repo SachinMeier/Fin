@@ -6,6 +6,7 @@ import analysisRouter from "./routes/analysis.js";
 import categoriesRouter, { DEFAULT_CATEGORIES } from "./routes/categories.js";
 import counterpartiesRouter from "./routes/counterparties.js";
 import rulesRouter from "./routes/rules.js";
+import accountsRouter from "./routes/accounts.js";
 import { renderHomePage } from "./templates/home.js";
 import { renderInstructionsPage } from "./templates/instructions.js";
 
@@ -103,6 +104,7 @@ app.use("/statements", analysisRouter);
 app.use("/categories", categoriesRouter);
 app.use("/counterparties", counterpartiesRouter);
 app.use("/rules", rulesRouter);
+app.use("/accounts", accountsRouter);
 
 function shutdown() {
   console.log("\nShutting down...");

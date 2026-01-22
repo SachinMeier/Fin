@@ -139,13 +139,13 @@ router.get("/", (req, res) => {
     SELECT
       c.*,
       (SELECT COUNT(*) FROM categories WHERE parent_category_id = c.id) AS children_count,
-      (SELECT COUNT(*) FROM vendors WHERE category_id = c.id) AS vendor_count
+      (SELECT COUNT(*) FROM counterparties WHERE category_id = c.id) AS counterparty_count
     FROM categories c
     WHERE c.parent_category_id IS NULL
     ORDER BY c.name
   `
     )
-    .all() as Array<Category & { children_count: number; vendor_count: number }>;
+    .all() as Array<Category & { children_count: number; counterparty_count: number }>;
 
   // Check for import success message in query params
   const imported = req.query.imported ? Number(req.query.imported) : undefined;
@@ -256,14 +256,14 @@ router.get("/:id", (req, res) => {
     SELECT
       c.*,
       (SELECT COUNT(*) FROM categories WHERE parent_category_id = c.id) AS children_count,
-      (SELECT COUNT(*) FROM vendors WHERE category_id = c.id) AS vendor_count
+      (SELECT COUNT(*) FROM counterparties WHERE category_id = c.id) AS counterparty_count
     FROM categories c
     WHERE c.parent_category_id = ?
     ORDER BY c.name
   `
     )
     .all(categoryId) as Array<
-    Category & { children_count: number; vendor_count: number }
+    Category & { children_count: number; counterparty_count: number }
   >;
 
   // Get ancestor path for breadcrumbs
@@ -278,30 +278,30 @@ router.get("/:id", (req, res) => {
     .prepare(
       `
     SELECT
-      COUNT(DISTINCT v.id) AS vendor_count,
+      COUNT(DISTINCT cp.id) AS counterparty_count,
       COUNT(t.id) AS transaction_count,
       COALESCE(SUM(t.amount), 0) AS total_amount
-    FROM vendors v
-    LEFT JOIN transactions t ON t.vendor_id = v.id
-    WHERE v.category_id IN (${placeholders})
+    FROM counterparties cp
+    LEFT JOIN transactions t ON t.counterparty_id = cp.id
+    WHERE cp.category_id IN (${placeholders})
   `
     )
     .get(...descendantIds) as {
-    vendor_count: number;
+    counterparty_count: number;
     transaction_count: number;
     total_amount: number;
   };
 
-  // Get vendors directly in this category (not subcategories)
-  const vendors = db
+  // Get counterparties directly in this category (not subcategories)
+  const counterparties = db
     .prepare(
       `
-    SELECT v.id, v.name, v.address, COUNT(t.id) AS transaction_count, COALESCE(SUM(t.amount), 0) AS total_amount
-    FROM vendors v
-    LEFT JOIN transactions t ON t.vendor_id = v.id
-    WHERE v.category_id = ?
-    GROUP BY v.id
-    ORDER BY v.name
+    SELECT cp.id, cp.name, cp.address, COUNT(t.id) AS transaction_count, COALESCE(SUM(t.amount), 0) AS total_amount
+    FROM counterparties cp
+    LEFT JOIN transactions t ON t.counterparty_id = cp.id
+    WHERE cp.category_id = ?
+    GROUP BY cp.id
+    ORDER BY cp.name
     LIMIT 10
   `
     )
@@ -314,7 +314,7 @@ router.get("/:id", (req, res) => {
   }>;
 
   res.send(
-    renderCategoryDetailPage(category, children, breadcrumbs, stats, vendors)
+    renderCategoryDetailPage(category, children, breadcrumbs, stats, counterparties)
   );
 });
 
@@ -341,12 +341,12 @@ router.get("/:id/transactions", (req, res) => {
       `
     SELECT
       t.id, t.date, t.amount, t.reference_number,
-      v.name AS vendor_name, v.address AS vendor_address,
+      cp.name AS counterparty_name, cp.address AS counterparty_address,
       c.id AS category_id, c.name AS category_name, c.color AS category_color
     FROM transactions t
-    INNER JOIN vendors v ON t.vendor_id = v.id
-    INNER JOIN categories c ON v.category_id = c.id
-    WHERE v.category_id IN (${placeholders})
+    INNER JOIN counterparties cp ON t.counterparty_id = cp.id
+    INNER JOIN categories c ON cp.category_id = c.id
+    WHERE cp.category_id IN (${placeholders})
     ORDER BY t.date DESC
     LIMIT 500
   `
@@ -356,8 +356,8 @@ router.get("/:id/transactions", (req, res) => {
     date: string;
     amount: number;
     reference_number: string;
-    vendor_name: string;
-    vendor_address: string;
+    counterparty_name: string;
+    counterparty_address: string;
     category_id: number;
     category_name: string;
     category_color: string | null;
@@ -528,10 +528,10 @@ router.post("/:id/delete", (req, res) => {
     return;
   }
 
-  // Delete the category and reassign its vendors to Uncategorized
+  // Delete the category and reassign its counterparties to Uncategorized
   db.transaction(() => {
-    // Reassign all vendors in this category to Uncategorized
-    db.prepare("UPDATE vendors SET category_id = ? WHERE category_id = ?")
+    // Reassign all counterparties in this category to Uncategorized
+    db.prepare("UPDATE counterparties SET category_id = ? WHERE category_id = ?")
       .run(UNCATEGORIZED_CATEGORY_ID, categoryId);
 
     // Delete the category
@@ -552,7 +552,7 @@ router.post("/:id/delete", (req, res) => {
 
 function renderCategoriesListPage(
   categories: Array<
-    Category & { children_count: number; vendor_count: number }
+    Category & { children_count: number; counterparty_count: number }
   >,
   imported?: number,
   skipped?: number
@@ -568,7 +568,7 @@ function renderCategoriesListPage(
             : renderCategoryPill({ name: row.name, color: row.color, size: "md" }),
       },
       { key: "children_count", label: "Subcategories", align: "right" },
-      { key: "vendor_count", label: "Vendors", align: "right" },
+      { key: "counterparty_count", label: "Counterparties", align: "right" },
     ],
     rows: categories,
     rowHref: (row) => `/categories/${row.id}`,
@@ -610,11 +610,11 @@ function renderCategoriesListPage(
 function renderCategoryDetailPage(
   category: Category,
   children: Array<
-    Category & { children_count: number; vendor_count: number }
+    Category & { children_count: number; counterparty_count: number }
   >,
   breadcrumbs: Category[],
-  stats: { vendor_count: number; transaction_count: number; total_amount: number },
-  vendors: Array<{
+  stats: { counterparty_count: number; transaction_count: number; total_amount: number },
+  counterparties: Array<{
     id: number;
     name: string;
     address: string;
@@ -636,18 +636,18 @@ function renderCategoryDetailPage(
                 renderCategoryPill({ name: row.name, color: row.color, size: "md" }),
             },
             { key: "children_count", label: "Children", align: "right" },
-            { key: "vendor_count", label: "Vendors", align: "right" },
+            { key: "counterparty_count", label: "Counterparties", align: "right" },
           ],
           rows: children,
           rowHref: (row) => `/categories/${row.id}`,
         })
       : `<p class="text-gray-500 dark:text-gray-400 text-sm">No subcategories</p>`;
 
-  const vendorsTableHtml =
-    vendors.length > 0
+  const counterpartiesTableHtml =
+    counterparties.length > 0
       ? renderTable({
           columns: [
-            { key: "name", label: "Vendor" },
+            { key: "name", label: "Counterparty" },
             { key: "transaction_count", label: "Transactions", align: "right" },
             {
               key: "total_amount",
@@ -656,10 +656,10 @@ function renderCategoryDetailPage(
               render: (v) => formatCurrency(Number(v) || 0),
             },
           ],
-          rows: vendors,
-          rowHref: (row) => `/vendors/${row.id}`,
+          rows: counterparties,
+          rowHref: (row) => `/counterparties/${row.id}`,
         })
-      : `<p class="text-gray-500 dark:text-gray-400 text-sm">No vendors in this category</p>`;
+      : `<p class="text-gray-500 dark:text-gray-400 text-sm">No counterparties in this category</p>`;
 
   // Don't show edit/delete buttons for Uncategorized
   const actionButtons = isUncategorized
@@ -680,7 +680,7 @@ function renderCategoryDetailPage(
           label: "Delete",
           variant: "danger",
           type: "submit",
-          onclick: "return confirm('Delete this category? Vendors will be moved to Uncategorized.')",
+          onclick: "return confirm('Delete this category? Counterparties will be moved to Uncategorized.')",
         })}
       </form>`;
 
@@ -698,7 +698,7 @@ function renderCategoryDetailPage(
           ${categoryPillHtml}
         </div>
         <div class="flex gap-6 text-sm text-gray-500 dark:text-gray-400">
-          <span><span class="font-medium text-gray-900 dark:text-gray-100">Vendors:</span> ${stats.vendor_count}</span>
+          <span><span class="font-medium text-gray-900 dark:text-gray-100">Counterparties:</span> ${stats.counterparty_count}</span>
           <span><span class="font-medium text-gray-900 dark:text-gray-100">Transactions:</span> ${stats.transaction_count}</span>
           <span><span class="font-medium text-gray-900 dark:text-gray-100">Total:</span> ${formatCurrency(stats.total_amount)}</span>
         </div>
@@ -722,13 +722,13 @@ function renderCategoryDetailPage(
 
       <section>
         <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-medium">Vendors in this Category</h2>
+          <h2 class="text-lg font-medium">Counterparties in this Category</h2>
           ${renderLinkButton({
-            label: "Assign Vendors",
-            href: `/vendors?uncategorized=1`,
+            label: "Assign Counterparties",
+            href: `/counterparties?uncategorized=1`,
           })}
         </div>
-        ${vendorsTableHtml}
+        ${counterpartiesTableHtml}
       </section>
     </div>
   `;
@@ -748,7 +748,7 @@ function renderCategoryTransactionsPage(
     date: string;
     amount: number;
     reference_number: string;
-    vendor_name: string;
+    counterparty_name: string;
     category_id: number;
     category_name: string;
     category_color: string | null;
@@ -760,7 +760,7 @@ function renderCategoryTransactionsPage(
   const tableHtml = renderTable({
     columns: [
       { key: "date", label: "Date" },
-      { key: "vendor_name", label: "Vendor" },
+      { key: "counterparty_name", label: "Counterparty" },
       {
         key: "category_name",
         label: "Category",

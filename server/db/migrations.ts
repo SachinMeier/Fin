@@ -248,6 +248,15 @@ const migrations: Migration[] = [
       CREATE INDEX idx_statements_account ON statements(account_id);
     `,
   },
+  {
+    version: 9,
+    name: "add_custom_format_config",
+    up: `
+      -- Add custom_format_config column to accounts for user-defined CSV column mappings
+      -- Stores JSON-serialized FormatConfig when user saves a custom mapping
+      ALTER TABLE accounts ADD COLUMN custom_format_config TEXT DEFAULT NULL;
+    `,
+  },
 ];
 
 function ensureMigrationsTable(db: Database.Database): void {

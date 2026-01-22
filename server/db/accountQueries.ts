@@ -6,6 +6,7 @@
  */
 
 import { getDatabase } from "./index.js";
+import type { FormatConfig } from "../csv/formatRegistry.js";
 
 export interface Account {
   id: number;
@@ -13,6 +14,7 @@ export interface Account {
   account_type_code: string;
   name: string;
   created_at: string;
+  custom_format_config: string | null;
 }
 
 export interface AccountWithDetails extends Account {
@@ -29,7 +31,7 @@ export function getAllAccounts(): Account[] {
   const db = getDatabase();
   return db
     .prepare(
-      `SELECT id, institution_code, account_type_code, name, created_at
+      `SELECT id, institution_code, account_type_code, name, created_at, custom_format_config
        FROM accounts
        ORDER BY name`
     )
@@ -43,7 +45,7 @@ export function getAccountById(id: number): Account | undefined {
   const db = getDatabase();
   return db
     .prepare(
-      `SELECT id, institution_code, account_type_code, name, created_at
+      `SELECT id, institution_code, account_type_code, name, created_at, custom_format_config
        FROM accounts
        WHERE id = ?`
     )
@@ -57,7 +59,7 @@ export function getAccountByName(name: string): Account | undefined {
   const db = getDatabase();
   return db
     .prepare(
-      `SELECT id, institution_code, account_type_code, name, created_at
+      `SELECT id, institution_code, account_type_code, name, created_at, custom_format_config
        FROM accounts
        WHERE name = ?`
     )
@@ -160,4 +162,40 @@ export function getAccountsGroupedByInstitution(): Map<string, Account[]> {
   }
 
   return grouped;
+}
+
+/**
+ * Get the custom format config for an account (parsed from JSON)
+ * @returns The FormatConfig if one is saved, or null if none exists
+ */
+export function getAccountCustomFormatConfig(accountId: number): FormatConfig | null {
+  const account = getAccountById(accountId);
+  if (!account || !account.custom_format_config) {
+    return null;
+  }
+  return JSON.parse(account.custom_format_config) as FormatConfig;
+}
+
+/**
+ * Save a custom format config to an account
+ * @param accountId The account ID to update
+ * @param config The FormatConfig to save, or null to clear
+ */
+export function setAccountCustomFormatConfig(
+  accountId: number,
+  config: FormatConfig | null
+): void {
+  const db = getDatabase();
+  const configJson = config ? JSON.stringify(config) : null;
+  db.prepare(`UPDATE accounts SET custom_format_config = ? WHERE id = ?`).run(
+    configJson,
+    accountId
+  );
+}
+
+/**
+ * Clear the custom format config for an account
+ */
+export function clearAccountCustomFormatConfig(accountId: number): void {
+  setAccountCustomFormatConfig(accountId, null);
 }

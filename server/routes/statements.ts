@@ -4,9 +4,25 @@ import fs from "fs";
 import { getDatabase } from "../db/index.js";
 import { UNCATEGORIZED_CATEGORY_ID } from "../db/migrations.js";
 import { parseCsv } from "../csv.js";
+import { parseWithConfig } from "../csv/customParser.js";
+import type { FormatConfig, AmountHandling, ReferenceNumberStrategy } from "../csv/formatRegistry.js";
 import { applyCategorizationRules } from "../services/categorizationEngine.js";
 import { suggestCounterpartyGroupings, CounterpartyInfo, ParentWithChildrenInfo } from "../services/counterpartyGroupingEngine.js";
 import { getRootCounterparties, getParentCounterpartiesWithChildren } from "../db/counterpartyQueries.js";
+import {
+  getAllAccounts,
+  getAccountById,
+  getAccountCustomFormatConfig,
+  setAccountCustomFormatConfig,
+  type Account,
+} from "../db/accountQueries.js";
+import {
+  createPendingImport,
+  getPendingImport,
+  deletePendingImport,
+  parseHeadersAndPreview,
+} from "../services/pendingImports.js";
+import { renderColumnMapperPage } from "../templates/columnMapper.js";
 import {
   layout,
   renderTable,
@@ -30,15 +46,18 @@ router.get("/", (_req, res) => {
   const db = getDatabase();
 
   const statements = db.prepare(`
-    SELECT s.*, COUNT(t.id) as transaction_count, SUM(t.amount) as total_amount
+    SELECT s.id, s.period, s.account_id, s.confirmed_at, a.name as account_name,
+           COUNT(t.id) as transaction_count, SUM(t.amount) as total_amount
     FROM statements s
+    JOIN accounts a ON s.account_id = a.id
     LEFT JOIN transactions t ON t.statement_id = s.id
     GROUP BY s.id
     ORDER BY s.id DESC
   `).all() as Array<{
     id: number;
     period: string;
-    account: string;
+    account_id: number;
+    account_name: string;
     confirmed_at: string | null;
     transaction_count: number;
     total_amount: number | null;
@@ -49,109 +68,364 @@ router.get("/", (_req, res) => {
 
 // GET /statements/import - Show upload form
 router.get("/import", (_req, res) => {
-  const db = getDatabase();
-  const accounts = db.prepare(
-    "SELECT DISTINCT account FROM statements ORDER BY account"
-  ).all() as Array<{ account: string }>;
-
-  res.send(renderImportPage(accounts.map(a => a.account)));
+  const accounts = getAllAccounts();
+  res.send(renderImportPage(accounts));
 });
 
 // POST /statements/import - Handle file upload
 router.post("/import", upload.single("file"), (req, res) => {
-  const db = getDatabase();
-  const getAccounts = () => {
-    const rows = db.prepare(
-      "SELECT DISTINCT account FROM statements ORDER BY account"
-    ).all() as Array<{ account: string }>;
-    return rows.map(a => a.account);
-  };
-
   const file = req.file;
   const period = req.body.period?.trim() ?? "";
-  // Use newAccount if provided (for "Add New Account"), otherwise use selected account
-  const newAccount = req.body.newAccount?.trim() ?? "";
-  const selectedAccount = req.body.account?.trim() ?? "";
-  const account = newAccount !== "" ? newAccount : selectedAccount;
+  const accountIdStr = req.body.account_id?.trim() ?? "";
+  const accountId = accountIdStr ? Number(accountIdStr) : null;
 
   if (!file) {
-    res.send(renderImportPage(getAccounts(), "Please select a CSV file to upload"));
+    res.send(renderImportPage(getAllAccounts(), "Please select a CSV file to upload"));
     return;
   }
 
-  if (!period || !account) {
+  if (!period || accountId === null) {
     fs.unlinkSync(file.path);
-    res.send(renderImportPage(getAccounts(), "Period and Account are required"));
+    res.send(renderImportPage(getAllAccounts(), "Period and Account are required"));
+    return;
+  }
+
+  // Validate account exists
+  const account = getAccountById(accountId);
+  if (!account) {
+    fs.unlinkSync(file.path);
+    res.send(renderImportPage(getAllAccounts(), "Selected account not found"));
     return;
   }
 
   const content = fs.readFileSync(file.path, "utf-8");
   fs.unlinkSync(file.path);
 
-  const parseResult = parseCsv(content);
+  // Check if account has a saved custom format config
+  const customConfig = getAccountCustomFormatConfig(accountId);
+  if (customConfig) {
+    // Use the saved custom config to parse and import
+    const parseResult = parseWithConfig(content, customConfig);
+
+    if (parseResult.rows.length === 0) {
+      const errorMsg = parseResult.errors.length > 0
+        ? parseResult.errors.join("<br>")
+        : "No valid rows found in CSV";
+      res.send(renderImportPage(getAllAccounts(), errorMsg));
+      return;
+    }
+
+    try {
+      const statementId = importTransactions(accountId, period, parseResult.rows);
+      res.redirect(`/statements/${statementId}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Database error";
+      res.send(renderImportPage(getAllAccounts(), `Import failed: ${message}`));
+    }
+    return;
+  }
+
+  // No saved config - try legacy format first
+  const legacyResult = parseCsv(content);
+  if (legacyResult.rows.length > 0) {
+    // Legacy format worked, import directly
+    try {
+      const statementId = importTransactions(accountId, period, legacyResult.rows);
+      res.redirect(`/statements/${statementId}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Database error";
+      res.send(renderImportPage(getAllAccounts(), `Import failed: ${message}`));
+    }
+    return;
+  }
+
+  // Legacy format didn't work - redirect to column mapper
+  const { headers, previewRows } = parseHeadersAndPreview(content);
+
+  if (headers.length === 0) {
+    res.send(renderImportPage(getAllAccounts(), "CSV file appears to be empty or has no headers"));
+    return;
+  }
+
+  // Store pending import and redirect to mapper
+  const tempId = createPendingImport({
+    csvContent: content,
+    accountId,
+    period,
+    headers,
+    previewRows,
+  });
+
+  res.redirect(`/statements/import/map?tempId=${tempId}`);
+});
+
+// GET /statements/import/map - Show column mapping UI
+router.get("/import/map", (req, res) => {
+  const tempId = req.query.tempId as string;
+  if (!tempId) {
+    res.redirect("/statements/import");
+    return;
+  }
+
+  const pending = getPendingImport(tempId);
+  if (!pending) {
+    res.send(renderImportPage(getAllAccounts(), "Import session expired. Please upload the file again."));
+    return;
+  }
+
+  const account = getAccountById(pending.accountId);
+  if (!account) {
+    res.send(renderImportPage(getAllAccounts(), "Account not found"));
+    return;
+  }
+
+  res.send(renderColumnMapperPage({
+    tempId,
+    accountName: account.name,
+    period: pending.period,
+    headers: pending.headers,
+    previewRows: pending.previewRows,
+  }));
+});
+
+// POST /statements/import/map - Process mapping and import
+router.post("/import/map", (req, res) => {
+  const tempId = req.body.tempId as string;
+  if (!tempId) {
+    res.redirect("/statements/import");
+    return;
+  }
+
+  const pending = getPendingImport(tempId);
+  if (!pending) {
+    res.send(renderImportPage(getAllAccounts(), "Import session expired. Please upload the file again."));
+    return;
+  }
+
+  const account = getAccountById(pending.accountId);
+  if (!account) {
+    res.send(renderImportPage(getAllAccounts(), "Account not found"));
+    return;
+  }
+
+  // Extract form values
+  const dateColumn = req.body.dateColumn as string;
+  const dateFormat = req.body.dateFormat as string;
+  const amountStyle = req.body.amountStyle as string;
+  const counterpartyColumn = req.body.counterpartyColumn as string;
+  const referenceColumn = req.body.referenceColumn as string;
+  const addressColumn = req.body.addressColumn as string;
+  const saveMapping = req.body.saveMapping === "1";
+
+  // Validate required fields
+  if (!dateColumn || !counterpartyColumn) {
+    res.send(renderColumnMapperPage({
+      tempId,
+      accountName: account.name,
+      period: pending.period,
+      headers: pending.headers,
+      previewRows: pending.previewRows,
+      error: "Date and Counterparty columns are required",
+      selectedValues: req.body,
+    }));
+    return;
+  }
+
+  // Build AmountHandling config
+  let amountHandling: AmountHandling;
+  switch (amountStyle) {
+    case "separate": {
+      const debitColumn = req.body.debitColumn as string;
+      const creditColumn = req.body.creditColumn as string;
+      if (!debitColumn || !creditColumn) {
+        res.send(renderColumnMapperPage({
+          tempId,
+          accountName: account.name,
+          period: pending.period,
+          headers: pending.headers,
+          previewRows: pending.previewRows,
+          error: "Debit and Credit columns are required for separate columns mode",
+          selectedValues: req.body,
+        }));
+        return;
+      }
+      amountHandling = { type: "separateColumns", debitColumn, creditColumn };
+      break;
+    }
+    case "withType": {
+      const amountColumnType = req.body.amountColumnType as string;
+      const typeColumn = req.body.typeColumn as string;
+      const debitValue = req.body.debitValue as string || "Debit";
+      if (!amountColumnType || !typeColumn) {
+        res.send(renderColumnMapperPage({
+          tempId,
+          accountName: account.name,
+          period: pending.period,
+          headers: pending.headers,
+          previewRows: pending.previewRows,
+          error: "Amount and Type columns are required for amount with type mode",
+          selectedValues: req.body,
+        }));
+        return;
+      }
+      amountHandling = { type: "absoluteWithType", amountColumn: amountColumnType, typeColumn, debitValue };
+      break;
+    }
+    default: {
+      const amountColumn = req.body.amountColumn as string;
+      if (!amountColumn) {
+        res.send(renderColumnMapperPage({
+          tempId,
+          accountName: account.name,
+          period: pending.period,
+          headers: pending.headers,
+          previewRows: pending.previewRows,
+          error: "Amount column is required",
+          selectedValues: req.body,
+        }));
+        return;
+      }
+      amountHandling = { type: "signedAmount", column: amountColumn };
+    }
+  }
+
+  // Build reference number strategy
+  const referenceNumberStrategy: ReferenceNumberStrategy = referenceColumn
+    ? { type: "column", column: referenceColumn }
+    : { type: "synthetic" };
+
+  // Build FormatConfig
+  const formatConfig: FormatConfig = {
+    expectedHeaders: pending.headers,
+    columnMappings: {
+      date: dateColumn,
+      counterpartyName: counterpartyColumn,
+      address: addressColumn || undefined,
+    },
+    amountHandling,
+    referenceNumberStrategy,
+    dateFormat: { pattern: dateFormat || "MM/DD/YYYY" },
+  };
+
+  // Parse CSV with the config
+  const parseResult = parseWithConfig(pending.csvContent, formatConfig);
 
   if (parseResult.rows.length === 0) {
     const errorMsg = parseResult.errors.length > 0
-      ? parseResult.errors.join("<br>")
+      ? parseResult.errors.slice(0, 5).join("; ") + (parseResult.errors.length > 5 ? ` (and ${parseResult.errors.length - 5} more)` : "")
       : "No valid rows found in CSV";
-    res.send(renderImportPage(getAccounts(), errorMsg));
+    res.send(renderColumnMapperPage({
+      tempId,
+      accountName: account.name,
+      period: pending.period,
+      headers: pending.headers,
+      previewRows: pending.previewRows,
+      error: errorMsg,
+      selectedValues: req.body,
+    }));
     return;
   }
 
   try {
-    const statementId = db.transaction(() => {
-      const stmtResult = db.prepare(
-        "INSERT INTO statements (period, account, confirmed_at) VALUES (?, ?, NULL)"
-      ).run(period, account);
-      const statementId = stmtResult.lastInsertRowid;
+    // Save the mapping if requested
+    if (saveMapping) {
+      setAccountCustomFormatConfig(pending.accountId, formatConfig);
+    }
 
-      for (const row of parseResult.rows) {
-        // Find or create counterparty
-        let counterparty = db.prepare(
-          "SELECT id, category_id FROM counterparties WHERE name = ? AND address = ?"
-        ).get(row.payee, row.address) as { id: number; category_id: number } | undefined;
+    // Import transactions
+    const statementId = importTransactions(pending.accountId, pending.period, parseResult.rows);
 
-        if (!counterparty) {
-          // Apply categorization rules to determine initial category
-          const ruleResult = applyCategorizationRules(db, row.payee);
-          const categoryId = ruleResult.categoryId ?? UNCATEGORIZED_CATEGORY_ID;
-
-          const counterpartyResult = db.prepare(
-            "INSERT INTO counterparties (name, address, category_id) VALUES (?, ?, ?)"
-          ).run(row.payee, row.address, categoryId);
-          counterparty = { id: Number(counterpartyResult.lastInsertRowid), category_id: categoryId };
-        }
-
-        // Insert transaction (skip duplicates by reference number)
-        const existing = db.prepare(
-          "SELECT id FROM transactions WHERE reference_number = ?"
-        ).get(row.referenceNumber);
-
-        if (!existing) {
-          db.prepare(
-            "INSERT INTO transactions (reference_number, date, statement_id, counterparty_id, amount) VALUES (?, ?, ?, ?, ?)"
-          ).run(row.referenceNumber, row.postedDate, statementId, counterparty.id, row.amount);
-        }
-      }
-
-      return statementId;
-    })();
+    // Clean up pending import
+    deletePendingImport(tempId);
 
     res.redirect(`/statements/${statementId}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Database error";
-    res.send(renderImportPage(getAccounts(), `Import failed: ${message}`));
+    res.send(renderColumnMapperPage({
+      tempId,
+      accountName: account.name,
+      period: pending.period,
+      headers: pending.headers,
+      previewRows: pending.previewRows,
+      error: `Import failed: ${message}`,
+      selectedValues: req.body,
+    }));
   }
 });
+
+// POST /statements/import/clear-mapping - Clear saved mapping for an account
+router.post("/import/clear-mapping", (req, res) => {
+  const accountIdStr = req.body.account_id as string;
+  const accountId = accountIdStr ? Number(accountIdStr) : null;
+
+  if (accountId) {
+    setAccountCustomFormatConfig(accountId, null);
+  }
+
+  res.redirect("/statements/import");
+});
+
+/**
+ * Import transactions into the database
+ * Returns the created statement ID
+ */
+function importTransactions(
+  accountId: number,
+  period: string,
+  rows: Array<{ postedDate: string; referenceNumber: string; payee: string; address: string; amount: number }>
+): number {
+  const db = getDatabase();
+
+  return db.transaction(() => {
+    const stmtResult = db.prepare(
+      "INSERT INTO statements (period, account_id, confirmed_at) VALUES (?, ?, NULL)"
+    ).run(period, accountId);
+    const statementId = stmtResult.lastInsertRowid;
+
+    for (const row of rows) {
+      // Find or create counterparty
+      let counterparty = db.prepare(
+        "SELECT id, category_id FROM counterparties WHERE name = ? AND address = ?"
+      ).get(row.payee, row.address) as { id: number; category_id: number } | undefined;
+
+      if (!counterparty) {
+        // Apply categorization rules to determine initial category
+        const ruleResult = applyCategorizationRules(db, row.payee);
+        const categoryId = ruleResult.categoryId ?? UNCATEGORIZED_CATEGORY_ID;
+
+        const counterpartyResult = db.prepare(
+          "INSERT INTO counterparties (name, address, category_id) VALUES (?, ?, ?)"
+        ).run(row.payee, row.address, categoryId);
+        counterparty = { id: Number(counterpartyResult.lastInsertRowid), category_id: categoryId };
+      }
+
+      // Insert transaction (skip duplicates by reference number)
+      const existing = db.prepare(
+        "SELECT id FROM transactions WHERE reference_number = ?"
+      ).get(row.referenceNumber);
+
+      if (!existing) {
+        db.prepare(
+          "INSERT INTO transactions (reference_number, date, statement_id, counterparty_id, amount) VALUES (?, ?, ?, ?, ?)"
+        ).run(row.referenceNumber, row.postedDate, statementId, counterparty.id, row.amount);
+      }
+    }
+
+    return Number(statementId);
+  })();
+}
 
 // GET /statements/:id - Show statement details
 router.get("/:id", (req, res) => {
   const db = getDatabase();
   const statementId = req.params.id;
 
-  const statement = db.prepare(
-    "SELECT * FROM statements WHERE id = ?"
-  ).get(statementId) as { id: number; period: string; account: string; confirmed_at: string | null } | undefined;
+  const statement = db.prepare(`
+    SELECT s.id, s.period, s.account_id, s.confirmed_at, a.name as account_name
+    FROM statements s
+    JOIN accounts a ON s.account_id = a.id
+    WHERE s.id = ?
+  `).get(statementId) as { id: number; period: string; account_id: number; account_name: string; confirmed_at: string | null } | undefined;
 
   if (!statement) {
     res.status(404).send("Statement not found");
@@ -295,62 +569,85 @@ router.post("/reset-db", (_req, res) => {
   res.redirect("/statements/import");
 });
 
-function renderImportPage(existingAccounts: string[], error?: string): string {
+function renderImportPage(accounts: Account[], error?: string): string {
   const errorHtml = error
     ? `<div class="px-4 py-3 mb-6 text-sm rounded-lg bg-red-50 text-red-700 border border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800">${error}</div>`
     : "";
 
   const inputClasses = "w-full px-4 py-2 text-base border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-200 dark:focus:ring-gray-700 focus:border-gray-300 dark:focus:border-gray-600 transition-colors";
 
-  const accountOptions = existingAccounts
-    .map(account => `<option value="${escapeHtml(account)}">${escapeHtml(account)}</option>`)
+  // Check which accounts have saved custom mappings
+  const accountsWithMappings = new Set(
+    accounts.filter(a => a.custom_format_config !== null).map(a => a.id)
+  );
+
+  const accountOptions = accounts
+    .map(account => {
+      const hasMapping = accountsWithMappings.has(account.id);
+      const label = hasMapping
+        ? `${escapeHtml(account.name)} (has saved mapping)`
+        : escapeHtml(account.name);
+      return `<option value="${account.id}" data-has-mapping="${hasMapping}">${label}</option>`;
+    })
     .join("");
+
+  const noAccountsMessage = accounts.length === 0
+    ? `<p class="text-sm text-amber-600 dark:text-amber-400 mb-4">No accounts configured. <a href="/accounts/new" class="underline">Create an account</a> first.</p>`
+    : "";
 
   const content = `
     <h1 class="text-2xl font-semibold mb-6">Import Statement</h1>
     ${errorHtml}
+    ${noAccountsMessage}
     <form method="POST" enctype="multipart/form-data" class="space-y-4">
       <div class="flex flex-col gap-1">
         <label class="text-sm font-medium text-gray-500 dark:text-gray-400" for="period">Period</label>
         <input class="${inputClasses}" type="text" id="period" name="period" placeholder="e.g., January 2024" required>
       </div>
       <div class="flex flex-col gap-1">
-        <label class="text-sm font-medium text-gray-500 dark:text-gray-400" for="account">Account</label>
-        <select class="${inputClasses}" id="account" name="account">
+        <label class="text-sm font-medium text-gray-500 dark:text-gray-400" for="account_id">Account</label>
+        <select class="${inputClasses}" id="account_id" name="account_id" required ${accounts.length === 0 ? "disabled" : ""} onchange="updateMappingInfo()">
           <option value="">Select an account...</option>
           ${accountOptions}
-          <option value="__new__">+ Add New Account</option>
         </select>
-      </div>
-      <div id="newAccountWrapper" class="flex flex-col gap-1 hidden">
-        <label class="text-sm font-medium text-gray-500 dark:text-gray-400" for="newAccount">New Account Name</label>
-        <input class="${inputClasses}" type="text" id="newAccount" name="newAccount" placeholder="e.g., Chase Checking">
+        <div id="mapping-info" class="hidden text-sm text-gray-500 dark:text-gray-400 mt-1">
+          <span class="text-green-600 dark:text-green-400">This account has a saved column mapping.</span>
+          <button type="button" onclick="clearMapping()" class="ml-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 underline">Clear mapping</button>
+        </div>
       </div>
       <div class="flex flex-col gap-1">
         <label class="text-sm font-medium text-gray-500 dark:text-gray-400" for="file">CSV File</label>
         <input class="${inputClasses}" type="file" id="file" name="file" accept=".csv" required>
       </div>
       <div class="pt-4">
-        ${renderButton({ label: "Upload & Import", variant: "proceed", type: "submit" })}
+        ${renderButton({ label: "Upload & Import", variant: "proceed", type: "submit", disabled: accounts.length === 0 })}
       </div>
     </form>
 
-    <script>
-      const accountSelect = document.getElementById('account');
-      const newAccountWrapper = document.getElementById('newAccountWrapper');
-      const newAccountInput = document.getElementById('newAccount');
+    <form id="clear-mapping-form" method="POST" action="/statements/import/clear-mapping" class="hidden">
+      <input type="hidden" name="account_id" id="clear-mapping-account-id">
+    </form>
 
-      accountSelect.addEventListener('change', function() {
-        if (this.value === '__new__') {
-          newAccountWrapper.classList.remove('hidden');
-          newAccountInput.required = true;
-          newAccountInput.focus();
+    <script>
+      function updateMappingInfo() {
+        const select = document.getElementById('account_id');
+        const info = document.getElementById('mapping-info');
+        const option = select.options[select.selectedIndex];
+        if (option && option.dataset.hasMapping === 'true') {
+          info.classList.remove('hidden');
         } else {
-          newAccountWrapper.classList.add('hidden');
-          newAccountInput.required = false;
-          newAccountInput.value = '';
+          info.classList.add('hidden');
         }
-      });
+      }
+
+      function clearMapping() {
+        const select = document.getElementById('account_id');
+        const accountId = select.value;
+        if (accountId && confirm('Clear the saved column mapping for this account?')) {
+          document.getElementById('clear-mapping-account-id').value = accountId;
+          document.getElementById('clear-mapping-form').submit();
+        }
+      }
     </script>
   `;
 
@@ -358,7 +655,7 @@ function renderImportPage(existingAccounts: string[], error?: string): string {
 }
 
 function renderStatementPage(
-  statement: { id: number; period: string; account: string; confirmed_at: string | null },
+  statement: { id: number; period: string; account_id: number; account_name: string; confirmed_at: string | null },
   transactions: Array<{ id: number; reference_number: string; date: string; amount: number; counterparty_name: string; counterparty_address: string; category_id: number | null; category_name: string | null; category_color: string | null }>,
   totalAmount: number,
   groupingSuggestions: GroupingSuggestionDisplay[] = []
@@ -441,7 +738,7 @@ function renderStatementPage(
   const content = `
     <div class="flex items-start justify-between mb-6">
       <div>
-        <h1 class="text-2xl font-semibold mb-2">${escapeHtml(statement.account)}</h1>
+        <h1 class="text-2xl font-semibold mb-2">${escapeHtml(statement.account_name)}</h1>
         <div class="text-sm text-gray-500 dark:text-gray-400 flex items-center gap-2">
           <span>Period: ${escapeHtml(statement.period)}</span>
           <span>·</span>
@@ -471,7 +768,8 @@ function renderStatementPage(
 interface StatementRow {
   id: number;
   period: string;
-  account: string;
+  account_id: number;
+  account_name: string;
   confirmed_at: string | null;
   transaction_count: number;
   total_amount: number | null;
@@ -480,7 +778,7 @@ interface StatementRow {
 function renderStatementsListPage(statements: Array<StatementRow>): string {
   const tableHtml = renderTable({
     columns: [
-      { key: "account", label: "Account" },
+      { key: "account_name", label: "Account" },
       { key: "period", label: "Period" },
       { key: "transaction_count", label: "Transactions", align: "right" },
       {

@@ -6,7 +6,7 @@
  * each with its own CSV parsing configuration.
  */
 
-import { bofaCheckingFormat } from "./formats/bofa-checking.js";
+import { bofaCreditCardFormat } from "./formats/bofa-credit-card.js";
 
 /**
  * Amount handling strategies for different bank formats
@@ -104,9 +104,9 @@ export const INSTITUTIONS: Institution[] = [
     name: "Bank of America",
     accountTypes: [
       {
-        code: "checking",
-        name: "Checking",
-        format: bofaCheckingFormat,
+        code: "credit-card",
+        name: "Credit Card",
+        format: bofaCreditCardFormat,
       },
     ],
   },

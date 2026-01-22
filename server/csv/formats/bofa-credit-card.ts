@@ -1,7 +1,7 @@
 /**
- * Bank of America Checking Account Format
+ * Bank of America Credit Card Format
  *
- * BofA checking statements have:
+ * BofA credit card statements have:
  * - 5 lines of account summary at the top
  * - 1 blank line
  * - Header row: Date,Description,Amount,Running Bal.
@@ -15,7 +15,7 @@
 
 import type { FormatConfig } from "../formatRegistry.js";
 
-export const bofaCheckingFormat: FormatConfig = {
+export const bofaCreditCardFormat: FormatConfig = {
   expectedHeaders: ["Date", "Description", "Amount", "Running Bal."],
 
   columnMappings: {
