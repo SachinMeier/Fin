@@ -2,22 +2,23 @@ import { Router } from "express";
 import {
   getSpendingByRootCategory,
   getSpendingBySubcategory,
-  getSpendingByVendor,
-  getSpendingByChildVendor,
+  getSpendingByCounterparty,
+  getSpendingByChildCounterparty,
   hasSubcategoriesWithSpending,
-  hasChildVendorsWithSpending,
+  hasChildCounterpartiesWithSpending,
   getDirectSpendingForCategory,
-  getDirectVendorSpendingForCategory,
-  getDirectSpendingForVendor,
-  getDirectTransactionsForVendor,
+  getDirectCounterpartySpendingForCategory,
+  getDirectSpendingForCounterparty,
+  getDirectTransactionsForCounterparty,
   getCategoryById,
-  getVendorById,
+  getCounterpartyById,
   getStatementById,
   getCategoryPath,
-  getVendorPath,
+  getCounterpartyPath,
   getStatementTotals,
-  getTransactionsForVendor,
-  getVendorTotalForStatement,
+  getTransactionsForCounterparty,
+  getCounterpartyTotalForStatement,
+  type CounterpartySpending,
 } from "../db/analysisQueries.js";
 import { getCategoryTreeFlat } from "../db/categoryQueries.js";
 import { UNCATEGORIZED_CATEGORY_ID } from "../db/migrations.js";
@@ -110,7 +111,7 @@ router.get("/:id/analysis", (req, res) => {
 
 /**
  * GET /statements/:id/analysis/category/:categoryId
- * Drill-down into a category - shows subcategories or vendors
+ * Drill-down into a category - shows subcategories or counterparties
  */
 router.get("/:id/analysis/category/:categoryId", (req, res) => {
   const statementId = Number(req.params.id);
@@ -159,7 +160,7 @@ router.get("/:id/analysis/category/:categoryId", (req, res) => {
       href: `/statements/${statementId}/analysis/category/${sub.id}`,
     }));
 
-    // Check for direct spending on this category (vendors directly in category, not subcategories)
+    // Check for direct spending on this category (counterparties directly in category, not subcategories)
     const directSpending = getDirectSpendingForCategory(statementId, categoryId);
     if (directSpending.transactionCount > 0) {
       // Add slice for transactions directly on this category, labeled with the category name
@@ -168,7 +169,7 @@ router.get("/:id/analysis/category/:categoryId", (req, res) => {
         label: category.name,
         value: directSpending.total,
         color: category.color || "#6B7280",
-        // Link to vendor view for this category to see the direct vendors
+        // Link to counterparty view for this category to see the direct counterparties
         href: `/statements/${statementId}/analysis/category/${categoryId}/root`,
       });
     }
@@ -176,21 +177,21 @@ router.get("/:id/analysis/category/:categoryId", (req, res) => {
     subtitle = "Breakdown by subcategory";
     itemCount = slices.length;
   } else {
-    // Show vendors
-    const vendorSpending = getSpendingByVendor(statementId, categoryId);
+    // Show counterparties
+    const counterpartySpending = getSpendingByCounterparty(statementId, categoryId);
     const isUncategorized = categoryId === UNCATEGORIZED_CATEGORY_ID;
 
-    slices = vendorSpending.map((vendor) => ({
-      id: vendor.id,
-      label: vendor.name,
-      value: vendor.total,
-      color: generateVendorColor(vendor.name),
-      href: `/statements/${statementId}/analysis/vendor/${vendor.id}`,
-      // Include vendorId for inline category selection when viewing uncategorized
-      vendorId: isUncategorized ? vendor.id : undefined,
+    slices = counterpartySpending.map((counterparty: CounterpartySpending) => ({
+      id: counterparty.id,
+      label: counterparty.name,
+      value: counterparty.total,
+      color: generateCounterpartyColor(counterparty.name),
+      href: `/statements/${statementId}/analysis/counterparty/${counterparty.id}`,
+      // Include counterpartyId for inline category selection when viewing uncategorized
+      counterpartyId: isUncategorized ? counterparty.id : undefined,
     }));
-    subtitle = "Breakdown by vendor";
-    itemCount = vendorSpending.length;
+    subtitle = "Breakdown by counterparty";
+    itemCount = counterpartySpending.length;
 
     // If viewing uncategorized, provide categories for inline selection
     if (isUncategorized) {
@@ -206,10 +207,6 @@ router.get("/:id/analysis/category/:categoryId", (req, res) => {
 
   // Calculate totals for this category
   const totalSpending = slices.reduce((sum, s) => sum + s.value, 0);
-  const transactionCount = slices.reduce((sum, s) => {
-    // We need to get this from the query results
-    return sum;
-  }, 0);
 
   res.send(
     renderAnalysisPage({
@@ -235,7 +232,7 @@ router.get("/:id/analysis/category/:categoryId", (req, res) => {
 
 /**
  * GET /statements/:id/analysis/category/:categoryId/root
- * Drill-down into the "Root" slice - shows vendors directly in this category
+ * Drill-down into the "Root" slice - shows counterparties directly in this category
  */
 router.get("/:id/analysis/category/:categoryId/root", (req, res) => {
   const statementId = Number(req.params.id);
@@ -257,7 +254,7 @@ router.get("/:id/analysis/category/:categoryId/root", (req, res) => {
   const hiddenSliceIds = parseHiddenSliceIds(req);
   const toggleBaseUrl = getToggleBaseUrl(req);
 
-  // Build breadcrumb path - include category path plus direct vendors entry
+  // Build breadcrumb path - include category path plus direct counterparties entry
   const categoryPath = getCategoryPath(categoryId);
   const breadcrumbPath: BreadcrumbItem[] = [
     ...categoryPath.map((cat) => ({
@@ -270,15 +267,15 @@ router.get("/:id/analysis/category/:categoryId/root", (req, res) => {
     },
   ];
 
-  // Get vendors directly in this category
-  const vendorSpending = getDirectVendorSpendingForCategory(statementId, categoryId);
+  // Get counterparties directly in this category
+  const counterpartySpending = getDirectCounterpartySpendingForCategory(statementId, categoryId);
 
-  const slices: PieSlice[] = vendorSpending.map((vendor) => ({
-    id: vendor.id,
-    label: vendor.name,
-    value: vendor.total,
-    color: generateVendorColor(vendor.name),
-    href: `/statements/${statementId}/analysis/vendor/${vendor.id}`,
+  const slices: PieSlice[] = counterpartySpending.map((counterparty: CounterpartySpending) => ({
+    id: counterparty.id,
+    label: counterparty.name,
+    value: counterparty.total,
+    color: generateCounterpartyColor(counterparty.name),
+    href: `/statements/${statementId}/analysis/counterparty/${counterparty.id}`,
   }));
 
   const totalSpending = slices.reduce((sum, s) => sum + s.value, 0);
@@ -293,10 +290,10 @@ router.get("/:id/analysis/category/:categoryId/root", (req, res) => {
       slices,
       stats: {
         totalSpending,
-        categoryCount: vendorSpending.length,
-        transactionCount: vendorSpending.reduce((sum, v) => sum + v.transactionCount, 0),
+        categoryCount: counterpartySpending.length,
+        transactionCount: counterpartySpending.reduce((sum: number, cp: CounterpartySpending) => sum + cp.transactionCount, 0),
       },
-      subtitle: "Vendors directly in this category",
+      subtitle: "Counterparties directly in this category",
       toggleBaseUrl,
       hiddenSliceIds,
     })
@@ -304,12 +301,12 @@ router.get("/:id/analysis/category/:categoryId/root", (req, res) => {
 });
 
 /**
- * GET /statements/:id/analysis/vendor/:vendorId
- * Drill-down into a vendor - shows child vendors if they exist
+ * GET /statements/:id/analysis/counterparty/:counterpartyId
+ * Drill-down into a counterparty - shows child counterparties if they exist
  */
-router.get("/:id/analysis/vendor/:vendorId", (req, res) => {
+router.get("/:id/analysis/counterparty/:counterpartyId", (req, res) => {
   const statementId = Number(req.params.id);
-  const vendorId = Number(req.params.vendorId);
+  const counterpartyId = Number(req.params.counterpartyId);
 
   const statement = getStatementById(statementId);
   if (!statement) {
@@ -317,9 +314,9 @@ router.get("/:id/analysis/vendor/:vendorId", (req, res) => {
     return;
   }
 
-  const vendor = getVendorById(vendorId);
-  if (!vendor) {
-    res.status(404).send("Vendor not found");
+  const counterparty = getCounterpartyById(counterpartyId);
+  if (!counterparty) {
+    res.status(404).send("Counterparty not found");
     return;
   }
 
@@ -327,35 +324,35 @@ router.get("/:id/analysis/vendor/:vendorId", (req, res) => {
   const hiddenSliceIds = parseHiddenSliceIds(req);
   const toggleBaseUrl = getToggleBaseUrl(req);
 
-  // Get the category for this vendor to build full breadcrumb path
-  const category = getCategoryById(vendor.category_id);
-  const categoryPath = category ? getCategoryPath(vendor.category_id) : [];
+  // Get the category for this counterparty to build full breadcrumb path
+  const category = getCategoryById(counterparty.category_id);
+  const categoryPath = category ? getCategoryPath(counterparty.category_id) : [];
 
-  // Build breadcrumb path: categories first, then vendor path
+  // Build breadcrumb path: categories first, then counterparty path
   const breadcrumbPath: BreadcrumbItem[] = [
     ...categoryPath.map((cat) => ({
       label: cat.name,
       href: `/statements/${statementId}/analysis/category/${cat.id}`,
     })),
-    ...getVendorPath(vendorId).map((v) => ({
-      label: v.name,
-      href: `/statements/${statementId}/analysis/vendor/${v.id}`,
+    ...getCounterpartyPath(counterpartyId).map((cp) => ({
+      label: cp.name,
+      href: `/statements/${statementId}/analysis/counterparty/${cp.id}`,
     })),
   ];
 
-  // Check if this vendor has children with spending
-  const hasChildren = hasChildVendorsWithSpending(statementId, vendorId);
+  // Check if this counterparty has children with spending
+  const hasChildren = hasChildCounterpartiesWithSpending(statementId, counterpartyId);
 
   if (!hasChildren) {
-    // No child vendors - show individual transactions as the final drill-down
-    const transactions = getTransactionsForVendor(statementId, vendorId);
-    const totals = getVendorTotalForStatement(statementId, vendorId);
+    // No child counterparties - show individual transactions as the final drill-down
+    const transactions = getTransactionsForCounterparty(statementId, counterpartyId);
+    const totals = getCounterpartyTotalForStatement(statementId, counterpartyId);
 
     const slices: PieSlice[] = transactions.map((txn) => ({
       id: txn.id,
       label: `${txn.date} (${txn.referenceNumber})`,
       value: txn.amount,
-      color: generateVendorColor(txn.referenceNumber),
+      color: generateCounterpartyColor(txn.referenceNumber),
       href: "#", // Transactions don't drill down further
     }));
 
@@ -364,7 +361,7 @@ router.get("/:id/analysis/vendor/:vendorId", (req, res) => {
         statementId,
         statementPeriod: statement.period,
         statementAccount: statement.account,
-        pageTitle: vendor.name,
+        pageTitle: counterparty.name,
         breadcrumbPath,
         slices,
         stats: {
@@ -380,26 +377,26 @@ router.get("/:id/analysis/vendor/:vendorId", (req, res) => {
     return;
   }
 
-  // Show child vendors
-  const childVendorSpending = getSpendingByChildVendor(statementId, vendorId);
-  const slices: PieSlice[] = childVendorSpending.map((child) => ({
+  // Show child counterparties
+  const childCounterpartySpending = getSpendingByChildCounterparty(statementId, counterpartyId);
+  const slices: PieSlice[] = childCounterpartySpending.map((child: CounterpartySpending) => ({
     id: child.id,
     label: child.name,
     value: child.total,
-    color: generateVendorColor(child.name),
-    href: `/statements/${statementId}/analysis/vendor/${child.id}`,
+    color: generateCounterpartyColor(child.name),
+    href: `/statements/${statementId}/analysis/counterparty/${child.id}`,
   }));
 
-  // Check for direct transactions on this vendor (not through child vendors)
-  const directSpending = getDirectSpendingForVendor(statementId, vendorId);
+  // Check for direct transactions on this counterparty (not through child counterparties)
+  const directSpending = getDirectSpendingForCounterparty(statementId, counterpartyId);
   if (directSpending.transactionCount > 0) {
-    // Add slice for transactions directly on this vendor, labeled with the vendor name
+    // Add slice for transactions directly on this counterparty, labeled with the counterparty name
     slices.push({
-      id: `root-${vendorId}`,
-      label: vendor.name,
+      id: `root-${counterpartyId}`,
+      label: counterparty.name,
       value: directSpending.total,
-      color: generateVendorColor(`${vendor.name}-root`),
-      href: `/statements/${statementId}/analysis/vendor/${vendorId}/root`,
+      color: generateCounterpartyColor(`${counterparty.name}-root`),
+      href: `/statements/${statementId}/analysis/counterparty/${counterpartyId}/root`,
     });
   }
 
@@ -410,13 +407,13 @@ router.get("/:id/analysis/vendor/:vendorId", (req, res) => {
       statementId,
       statementPeriod: statement.period,
       statementAccount: statement.account,
-      pageTitle: vendor.name,
+      pageTitle: counterparty.name,
       breadcrumbPath,
       slices,
       stats: {
         totalSpending,
         categoryCount: slices.length,
-        transactionCount: childVendorSpending.reduce((sum, v) => sum + v.transactionCount, 0) + directSpending.transactionCount,
+        transactionCount: childCounterpartySpending.reduce((sum: number, cp: CounterpartySpending) => sum + cp.transactionCount, 0) + directSpending.transactionCount,
       },
       subtitle: "Breakdown by location/variant",
       toggleBaseUrl,
@@ -426,12 +423,12 @@ router.get("/:id/analysis/vendor/:vendorId", (req, res) => {
 });
 
 /**
- * GET /statements/:id/analysis/vendor/:vendorId/root
- * Drill-down into the "Root" slice - shows transactions directly on this vendor
+ * GET /statements/:id/analysis/counterparty/:counterpartyId/root
+ * Drill-down into the "Root" slice - shows transactions directly on this counterparty
  */
-router.get("/:id/analysis/vendor/:vendorId/root", (req, res) => {
+router.get("/:id/analysis/counterparty/:counterpartyId/root", (req, res) => {
   const statementId = Number(req.params.id);
-  const vendorId = Number(req.params.vendorId);
+  const counterpartyId = Number(req.params.counterpartyId);
 
   const statement = getStatementById(statementId);
   if (!statement) {
@@ -439,9 +436,9 @@ router.get("/:id/analysis/vendor/:vendorId/root", (req, res) => {
     return;
   }
 
-  const vendor = getVendorById(vendorId);
-  if (!vendor) {
-    res.status(404).send("Vendor not found");
+  const counterparty = getCounterpartyById(counterpartyId);
+  if (!counterparty) {
+    res.status(404).send("Counterparty not found");
     return;
   }
 
@@ -449,35 +446,35 @@ router.get("/:id/analysis/vendor/:vendorId/root", (req, res) => {
   const hiddenSliceIds = parseHiddenSliceIds(req);
   const toggleBaseUrl = getToggleBaseUrl(req);
 
-  // Get the category for this vendor to build full breadcrumb path
-  const category = getCategoryById(vendor.category_id);
-  const categoryPath = category ? getCategoryPath(vendor.category_id) : [];
+  // Get the category for this counterparty to build full breadcrumb path
+  const category = getCategoryById(counterparty.category_id);
+  const categoryPath = category ? getCategoryPath(counterparty.category_id) : [];
 
-  // Build breadcrumb path: categories first, then vendor path, then direct transactions entry
+  // Build breadcrumb path: categories first, then counterparty path, then direct transactions entry
   const breadcrumbPath: BreadcrumbItem[] = [
     ...categoryPath.map((cat) => ({
       label: cat.name,
       href: `/statements/${statementId}/analysis/category/${cat.id}`,
     })),
-    ...getVendorPath(vendorId).map((v) => ({
-      label: v.name,
-      href: `/statements/${statementId}/analysis/vendor/${v.id}`,
+    ...getCounterpartyPath(counterpartyId).map((cp) => ({
+      label: cp.name,
+      href: `/statements/${statementId}/analysis/counterparty/${cp.id}`,
     })),
     {
-      label: vendor.name,
-      href: `/statements/${statementId}/analysis/vendor/${vendorId}/root`,
+      label: counterparty.name,
+      href: `/statements/${statementId}/analysis/counterparty/${counterpartyId}/root`,
     },
   ];
 
-  // Get transactions directly on this vendor
-  const transactions = getDirectTransactionsForVendor(statementId, vendorId);
-  const directSpending = getDirectSpendingForVendor(statementId, vendorId);
+  // Get transactions directly on this counterparty
+  const transactions = getDirectTransactionsForCounterparty(statementId, counterpartyId);
+  const directSpending = getDirectSpendingForCounterparty(statementId, counterpartyId);
 
   const slices: PieSlice[] = transactions.map((txn) => ({
     id: txn.id,
     label: `${txn.date} (${txn.referenceNumber})`,
     value: txn.amount,
-    color: generateVendorColor(txn.referenceNumber),
+    color: generateCounterpartyColor(txn.referenceNumber),
     href: "#", // Transactions don't drill down further
   }));
 
@@ -486,7 +483,7 @@ router.get("/:id/analysis/vendor/:vendorId/root", (req, res) => {
       statementId,
       statementPeriod: statement.period,
       statementAccount: statement.account,
-      pageTitle: vendor.name,
+      pageTitle: counterparty.name,
       breadcrumbPath,
       slices,
       stats: {
@@ -494,7 +491,7 @@ router.get("/:id/analysis/vendor/:vendorId/root", (req, res) => {
         categoryCount: transactions.length,
         transactionCount: transactions.length,
       },
-      subtitle: "Direct transactions on this vendor",
+      subtitle: "Direct transactions on this counterparty",
       toggleBaseUrl,
       hiddenSliceIds,
     })
@@ -502,9 +499,9 @@ router.get("/:id/analysis/vendor/:vendorId/root", (req, res) => {
 });
 
 /**
- * Generate a consistent color from a vendor name
+ * Generate a consistent color from a counterparty name
  */
-function generateVendorColor(name: string): string {
+function generateCounterpartyColor(name: string): string {
   let hash = 0;
   for (let i = 0; i < name.length; i++) {
     hash = name.charCodeAt(i) + ((hash << 5) - hash);
@@ -526,7 +523,7 @@ import {
   renderEmptySankeyPage,
   type SankeyNode,
 } from "../templates/index.js";
-import type { VendorTableItem } from "../templates/sankeyPage.js";
+import type { CounterpartyTableItem } from "../templates/sankeyPage.js";
 
 /**
  * Apply 2% threshold grouping - items below 2% of total are grouped into "Other"
@@ -628,7 +625,7 @@ router.get("/:id/sankey", (req, res) => {
 
 /**
  * GET /statements/:id/sankey/category/:categoryId
- * Category-level Sankey showing breakdown to subcategories or vendors
+ * Category-level Sankey showing breakdown to subcategories or counterparties
  */
 router.get("/:id/sankey/category/:categoryId", (req, res) => {
   const statementId = Number(req.params.id);
@@ -669,10 +666,10 @@ router.get("/:id/sankey/category/:categoryId", (req, res) => {
 
   let targets: SankeyNode[];
   let subtitle: string;
-  let vendorTable: { title: string; vendors: VendorTableItem[]; categories: typeof categoryTree; returnPath: string } | undefined;
+  let counterpartyTable: { title: string; counterparties: CounterpartyTableItem[]; categories: typeof categoryTree; returnPath: string } | undefined;
 
-  // Get direct vendors for this category (for vendor table)
-  const directVendors = getDirectVendorSpendingForCategory(statementId, categoryId);
+  // Get direct counterparties for this category (for counterparty table)
+  const directCounterparties = getDirectCounterpartySpendingForCategory(statementId, categoryId);
 
   if (hasSubcategories) {
     // Show subcategories with drill-down hrefs
@@ -689,67 +686,67 @@ router.get("/:id/sankey/category/:categoryId", (req, res) => {
     // Check for direct spending on this category
     const directSpending = getDirectSpendingForCategory(statementId, categoryId);
     if (directSpending.transactionCount > 0) {
-      // Direct spending slice links to vendors view
+      // Direct spending slice links to counterparties view
       targets.push({
         id: `direct-${categoryId}`,
         type: "category" as const,
         label: `${category.name} (direct)`,
         value: directSpending.total,
         color: category.color || "#6B7280",
-        href: `/statements/${statementId}/sankey/category/${categoryId}/vendors`,
+        href: `/statements/${statementId}/sankey/category/${categoryId}/counterparties`,
       });
     }
 
     subtitle = "Click a subcategory to drill down, or click the source to go back";
 
-    // If there are direct vendors, show them in the table
-    if (directVendors.length > 0) {
-      vendorTable = {
-        title: `Direct vendors in ${category.name}`,
-        vendors: directVendors.map((v) => ({
-          id: v.id,
-          name: v.name,
-          amount: v.total,
-          transactionCount: v.transactionCount,
-          categoryId: v.categoryId,
-          categoryName: v.categoryName,
-          categoryColor: v.categoryColor,
+    // If there are direct counterparties, show them in the table
+    if (directCounterparties.length > 0) {
+      counterpartyTable = {
+        title: `Direct counterparties in ${category.name}`,
+        counterparties: directCounterparties.map((cp: CounterpartySpending) => ({
+          id: cp.id,
+          name: cp.name,
+          amount: cp.total,
+          transactionCount: cp.transactionCount,
+          categoryId: cp.categoryId,
+          categoryName: cp.categoryName,
+          categoryColor: cp.categoryColor,
         })),
         categories: categoryTree,
         returnPath,
       };
     }
   } else {
-    // Leaf category - show vendors as targets with 2% grouping
-    const vendorSpending = getSpendingByVendor(statementId, categoryId);
-    const totalSpending = vendorSpending.reduce((sum, v) => sum + v.total, 0);
+    // Leaf category - show counterparties as targets with 2% grouping
+    const counterpartySpending = getSpendingByCounterparty(statementId, categoryId);
+    const totalSpending = counterpartySpending.reduce((sum: number, cp: CounterpartySpending) => sum + cp.total, 0);
 
-    // Map vendors to targets
-    const vendorTargets: SankeyNode[] = vendorSpending.map((vendor) => ({
-      id: String(vendor.id),
-      type: "vendor" as const,
-      label: vendor.name,
-      value: vendor.total,
-      color: generateVendorColor(vendor.name),
-      // No href for vendors - they're leaf nodes in the diagram
+    // Map counterparties to targets
+    const counterpartyTargets: SankeyNode[] = counterpartySpending.map((cp: CounterpartySpending) => ({
+      id: String(cp.id),
+      type: "counterparty" as const,
+      label: cp.name,
+      value: cp.total,
+      color: generateCounterpartyColor(cp.name),
+      // No href for counterparties - they're leaf nodes in the diagram
     }));
 
     // Apply 2% threshold grouping
-    targets = applyOtherGrouping(vendorTargets, totalSpending);
+    targets = applyOtherGrouping(counterpartyTargets, totalSpending);
 
     subtitle = "Click the source to go back";
 
-    // Show all vendors in the table (ungrouped)
-    vendorTable = {
-      title: "Vendors",
-      vendors: vendorSpending.map((v) => ({
-        id: v.id,
-        name: v.name,
-        amount: v.total,
-        transactionCount: v.transactionCount,
-        categoryId: v.categoryId,
-        categoryName: v.categoryName,
-        categoryColor: v.categoryColor,
+    // Show all counterparties in the table (ungrouped)
+    counterpartyTable = {
+      title: "Counterparties",
+      counterparties: counterpartySpending.map((cp: CounterpartySpending) => ({
+        id: cp.id,
+        name: cp.name,
+        amount: cp.total,
+        transactionCount: cp.transactionCount,
+        categoryId: cp.categoryId,
+        categoryName: cp.categoryName,
+        categoryColor: cp.categoryColor,
       })),
       categories: categoryTree,
       returnPath,
@@ -785,16 +782,16 @@ router.get("/:id/sankey/category/:categoryId", (req, res) => {
         transactionCount: targets.length,
       },
       subtitle,
-      vendorTable,
+      counterpartyTable,
     })
   );
 });
 
 /**
- * GET /statements/:id/sankey/category/:categoryId/vendors
- * Vendors view for a category that has direct vendors (shown when clicking "direct" slice)
+ * GET /statements/:id/sankey/category/:categoryId/counterparties
+ * Counterparties view for a category that has direct counterparties (shown when clicking "direct" slice)
  */
-router.get("/:id/sankey/category/:categoryId/vendors", (req, res) => {
+router.get("/:id/sankey/category/:categoryId/counterparties", (req, res) => {
   const statementId = Number(req.params.id);
   const categoryId = Number(req.params.categoryId);
 
@@ -814,7 +811,7 @@ router.get("/:id/sankey/category/:categoryId/vendors", (req, res) => {
   const categoryTree = getCategoryTreeFlat();
 
   // Current page URL for return path after category change
-  const returnPath = `/statements/${statementId}/sankey/category/${categoryId}/vendors`;
+  const returnPath = `/statements/${statementId}/sankey/category/${categoryId}/counterparties`;
 
   // Build breadcrumb path - include parent categories + current category
   const categoryPath = getCategoryPath(categoryId);
@@ -825,24 +822,24 @@ router.get("/:id/sankey/category/:categoryId/vendors", (req, res) => {
     })),
     {
       label: `${category.name} (direct)`,
-      href: `/statements/${statementId}/sankey/category/${categoryId}/vendors`,
+      href: `/statements/${statementId}/sankey/category/${categoryId}/counterparties`,
     },
   ];
 
-  // Get direct vendors for this category
-  const directVendors = getDirectVendorSpendingForCategory(statementId, categoryId);
-  const totalSpending = directVendors.reduce((sum, v) => sum + v.total, 0);
+  // Get direct counterparties for this category
+  const directCounterparties = getDirectCounterpartySpendingForCategory(statementId, categoryId);
+  const totalSpending = directCounterparties.reduce((sum: number, cp: CounterpartySpending) => sum + cp.total, 0);
 
-  // Map vendors to targets with 2% grouping
-  const vendorTargets: SankeyNode[] = directVendors.map((vendor) => ({
-    id: String(vendor.id),
-    type: "vendor" as const,
-    label: vendor.name,
-    value: vendor.total,
-    color: generateVendorColor(vendor.name),
+  // Map counterparties to targets with 2% grouping
+  const counterpartyTargets: SankeyNode[] = directCounterparties.map((cp: CounterpartySpending) => ({
+    id: String(cp.id),
+    type: "counterparty" as const,
+    label: cp.name,
+    value: cp.total,
+    color: generateCounterpartyColor(cp.name),
   }));
 
-  const groupedTargets = applyOtherGrouping(vendorTargets, totalSpending);
+  const groupedTargets = applyOtherGrouping(counterpartyTargets, totalSpending);
 
   // Source navigates back to category
   const source = {
@@ -852,17 +849,17 @@ router.get("/:id/sankey/category/:categoryId/vendors", (req, res) => {
     href: `/statements/${statementId}/sankey/category/${categoryId}`,
   };
 
-  // Vendor table with all vendors (ungrouped) and category selector data
-  const vendorTable = {
-    title: "Vendors",
-    vendors: directVendors.map((v) => ({
-      id: v.id,
-      name: v.name,
-      amount: v.total,
-      transactionCount: v.transactionCount,
-      categoryId: v.categoryId,
-      categoryName: v.categoryName,
-      categoryColor: v.categoryColor,
+  // Counterparty table with all counterparties (ungrouped) and category selector data
+  const counterpartyTable = {
+    title: "Counterparties",
+    counterparties: directCounterparties.map((cp: CounterpartySpending) => ({
+      id: cp.id,
+      name: cp.name,
+      amount: cp.total,
+      transactionCount: cp.transactionCount,
+      categoryId: cp.categoryId,
+      categoryName: cp.categoryName,
+      categoryColor: cp.categoryColor,
     })),
     categories: categoryTree,
     returnPath,
@@ -873,17 +870,17 @@ router.get("/:id/sankey/category/:categoryId/vendors", (req, res) => {
       statementId,
       statementPeriod: statement.period,
       statementAccount: statement.account,
-      pageTitle: `${category.name} (direct vendors)`,
+      pageTitle: `${category.name} (direct counterparties)`,
       breadcrumbPath,
       source,
       targets: groupedTargets,
       stats: {
         totalSpending,
-        categoryCount: directVendors.length,
-        transactionCount: directVendors.reduce((sum, v) => sum + v.transactionCount, 0),
+        categoryCount: directCounterparties.length,
+        transactionCount: directCounterparties.reduce((sum: number, cp: CounterpartySpending) => sum + cp.transactionCount, 0),
       },
       subtitle: "Click the source to go back",
-      vendorTable,
+      counterpartyTable,
     })
   );
 });

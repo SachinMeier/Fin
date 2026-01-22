@@ -7,7 +7,7 @@
 
 export interface SankeyNode {
   id: string;
-  type: "source" | "category" | "vendor";
+  type: "source" | "category" | "counterparty";
   label: string;
   value: number;
   color: string;
@@ -24,7 +24,7 @@ export interface SankeyChartOptions {
     /** URL to navigate up one level (undefined if at top level) */
     href?: string;
   };
-  /** Target nodes (right side - categories/vendors) */
+  /** Target nodes (right side - categories/counterparties) */
   targets: SankeyNode[];
   /** Chart dimensions */
   width?: number;
@@ -33,7 +33,7 @@ export interface SankeyChartOptions {
 
 interface LayoutNode {
   id: string;
-  type: "source" | "category" | "vendor";
+  type: "source" | "category" | "counterparty";
   label: string;
   value: number;
   color: string;

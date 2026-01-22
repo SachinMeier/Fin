@@ -1,7 +1,7 @@
 /**
- * Vendor Grouping Review Component
+ * Counterparty Grouping Review Component
  *
- * A reusable component for reviewing vendor grouping suggestions.
+ * A reusable component for reviewing counterparty grouping suggestions.
  * Can be embedded in the statement import flow or used standalone.
  */
 
@@ -14,17 +14,17 @@ import { renderButton } from "./button.js";
 export interface GroupingSuggestionDisplay {
   /** Unique ID for this suggestion (used in form) */
   suggestionId: string;
-  /** The canonical/cleaned name for the parent vendor */
+  /** The canonical/cleaned name for the parent counterparty */
   parentName: string;
-  /** IDs of vendors to group under this parent */
-  childVendorIds: number[];
-  /** Original names of child vendors (for display) */
-  childVendorNames: string[];
+  /** IDs of counterparties to group under this parent */
+  childCounterpartyIds: number[];
+  /** Original names of child counterparties (for display) */
+  childCounterpartyNames: string[];
   /** The normalized form used for matching (for context) */
   normalizedForm: string;
 }
 
-export interface VendorGroupingReviewOptions {
+export interface CounterpartyGroupingReviewOptions {
   /** The grouping suggestions to review */
   suggestions: GroupingSuggestionDisplay[];
   /** Form action URL for submitting decisions */
@@ -36,21 +36,21 @@ export interface VendorGroupingReviewOptions {
 }
 
 /**
- * Render the vendor grouping review component.
+ * Render the counterparty grouping review component.
  *
  * Displays proposed groupings with checkboxes to accept/reject each one.
  * Selected groupings will be applied when the form is submitted.
  */
-export function renderVendorGroupingReview({
+export function renderCounterpartyGroupingReview({
   suggestions,
   formAction,
   hiddenFields = {},
   showNormalizedForm = false,
-}: VendorGroupingReviewOptions): string {
+}: CounterpartyGroupingReviewOptions): string {
   if (suggestions.length === 0) {
     return `
       <div class="text-sm text-gray-500 dark:text-gray-400 py-4">
-        No vendor grouping suggestions found.
+        No counterparty grouping suggestions found.
       </div>
     `;
   }
@@ -90,7 +90,7 @@ function renderSuggestionCard(
   index: number,
   showNormalizedForm: boolean
 ): string {
-  const childList = suggestion.childVendorNames
+  const childList = suggestion.childCounterpartyNames
     .map((name) => `<li class="text-sm">${escapeHtml(name)}</li>`)
     .join("\n");
 
@@ -98,8 +98,8 @@ function renderSuggestionCard(
     ? `<span class="text-xs text-gray-400 dark:text-gray-500 ml-2">(${escapeHtml(suggestion.normalizedForm)})</span>`
     : "";
 
-  // Hidden input to pass the vendor IDs for this group
-  const vendorIdsInput = `<input type="hidden" name="group_${index}_vendor_ids" value="${suggestion.childVendorIds.join(",")}" />`;
+  // Hidden input to pass the counterparty IDs for this group
+  const counterpartyIdsInput = `<input type="hidden" name="group_${index}_counterparty_ids" value="${suggestion.childCounterpartyIds.join(",")}" />`;
   const parentNameInput = `<input type="hidden" name="group_${index}_parent_name" value="${escapeHtml(suggestion.parentName)}" />`;
 
   return `
@@ -112,7 +112,7 @@ function renderSuggestionCard(
           checked
           class="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500 dark:bg-gray-800"
         />
-        ${vendorIdsInput}
+        ${counterpartyIdsInput}
         ${parentNameInput}
         <div class="flex-1">
           <div class="flex items-center gap-2 mb-2">
@@ -121,7 +121,7 @@ function renderSuggestionCard(
             </span>
             ${normalizedHtml}
             <span class="text-xs text-gray-500 dark:text-gray-400">
-              (${suggestion.childVendorNames.length} vendors)
+              (${suggestion.childCounterpartyNames.length} counterparties)
             </span>
           </div>
           <ul class="text-gray-600 dark:text-gray-400 space-y-1 ml-1">
@@ -138,7 +138,7 @@ function renderSuggestionCard(
  */
 export function renderGroupingSuggestionsBanner(
   suggestionCount: number,
-  sectionId: string = "vendor-groupings"
+  sectionId: string = "counterparty-groupings"
 ): string {
   if (suggestionCount === 0) {
     return "";
@@ -148,14 +148,14 @@ export function renderGroupingSuggestionsBanner(
     <div class="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 mb-6">
       <div class="flex items-center gap-2">
         <span class="text-blue-600 dark:text-blue-400 font-medium">
-          ${suggestionCount} potential vendor grouping${suggestionCount === 1 ? "" : "s"} found
+          ${suggestionCount} potential counterparty grouping${suggestionCount === 1 ? "" : "s"} found
         </span>
         <a href="#${escapeHtml(sectionId)}" class="text-sm text-blue-500 dark:text-blue-400 hover:underline">
           Review below
         </a>
       </div>
       <p class="text-sm text-blue-600/80 dark:text-blue-400/80 mt-1">
-        We found vendors that appear to be from the same merchant. Review and approve groupings to organize your vendor list.
+        We found counterparties that appear to be from the same merchant. Review and approve groupings to organize your counterparty list.
       </p>
     </div>
   `;

@@ -14,8 +14,8 @@ export interface PieSlice {
   value: number;
   color: string;
   href: string;
-  /** Optional vendor ID for enabling inline category selection */
-  vendorId?: number;
+  /** Optional counterparty ID for enabling inline category selection */
+  counterpartyId?: number;
   /** Whether this slice is currently hidden */
   hidden?: boolean;
 }
@@ -27,7 +27,7 @@ export interface PieChartOptions {
   title?: string;
   /** Threshold below which slices are grouped into "Other" (0-1, e.g., 0.02 = 2%) */
   groupThreshold?: number;
-  /** If provided, enables inline category selection in legend for slices with vendorId */
+  /** If provided, enables inline category selection in legend for slices with counterpartyId */
   categories?: CategoryOption[];
   /** Return path for category selection form */
   categorySelectReturnPath?: string;
@@ -119,7 +119,7 @@ function formatPercent(value: number, total: number): string {
 }
 
 /**
- * Generate a consistent color from a string (for vendors without category colors)
+ * Generate a consistent color from a string (for counterparties without category colors)
  */
 function generateColor(str: string): string {
   let hash = 0;
@@ -217,10 +217,10 @@ function renderLegend(
       // Calculate percentage against visible total (or show -- if hidden)
       const percentText = isHidden ? "--" : formatPercent(slice.value, visibleTotal);
 
-      // If categories are provided and slice has a vendorId, show inline category select
-      if (categories && slice.vendorId !== undefined) {
+      // If categories are provided and slice has a counterpartyId, show inline category select
+      if (categories && slice.counterpartyId !== undefined) {
         const categorySelect = renderInlineCategorySelect({
-          vendorId: slice.vendorId,
+          counterpartyId: slice.counterpartyId,
           currentCategoryId: null,
           currentCategoryName: null,
           currentCategoryColor: null,

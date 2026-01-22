@@ -105,8 +105,8 @@ export function renderUncategorizedPill(size: "sm" | "md" = "sm"): string {
  * Options for the inline category select dropdown
  */
 export interface InlineCategorySelectOptions {
-  /** Vendor ID for the form action */
-  vendorId: number;
+  /** Counterparty ID for the form action */
+  counterpartyId: number;
   /** Currently selected category ID (null if uncategorized) */
   currentCategoryId: number | null;
   /** Current category name (for display) */
@@ -122,10 +122,10 @@ export interface InlineCategorySelectOptions {
 /**
  * Renders a small, unobtrusive inline category select dropdown.
  * Shows the current category as a pill, with a tiny dropdown arrow.
- * On change, auto-submits to update the vendor's category.
+ * On change, auto-submits to update the counterparty's category.
  */
 export function renderInlineCategorySelect({
-  vendorId,
+  counterpartyId,
   currentCategoryId,
   currentCategoryName,
   currentCategoryColor,
@@ -158,7 +158,7 @@ export function renderInlineCategorySelect({
   return `
     <form
       method="POST"
-      action="/vendors/${vendorId}/categorize"
+      action="/counterparties/${counterpartyId}/categorize"
       class="inline-block"
       onclick="event.stopPropagation()"
     >

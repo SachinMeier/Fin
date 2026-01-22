@@ -5,8 +5,8 @@ import { getDatabase } from "../db/index.js";
 import { UNCATEGORIZED_CATEGORY_ID } from "../db/migrations.js";
 import { parseCsv } from "../csv.js";
 import { applyCategorizationRules } from "../services/categorizationEngine.js";
-import { suggestVendorGroupings, VendorInfo, ParentWithChildrenInfo } from "../services/vendorGroupingEngine.js";
-import { getRootVendors, getParentVendorsWithChildren } from "../db/vendorQueries.js";
+import { suggestCounterpartyGroupings, CounterpartyInfo, ParentWithChildrenInfo } from "../services/counterpartyGroupingEngine.js";
+import { getRootCounterparties, getParentCounterpartiesWithChildren } from "../db/counterpartyQueries.js";
 import {
   layout,
   renderTable,
@@ -17,7 +17,7 @@ import {
   renderLinkButton,
   renderCategoryPill,
   renderUncategorizedPill,
-  renderVendorGroupingReview,
+  renderCounterpartyGroupingReview,
   renderGroupingSuggestionsBanner,
 } from "../templates/index.js";
 import type { GroupingSuggestionDisplay } from "../templates/index.js";
@@ -106,20 +106,20 @@ router.post("/import", upload.single("file"), (req, res) => {
       const statementId = stmtResult.lastInsertRowid;
 
       for (const row of parseResult.rows) {
-        // Find or create vendor
-        let vendor = db.prepare(
-          "SELECT id, category_id FROM vendors WHERE name = ? AND address = ?"
+        // Find or create counterparty
+        let counterparty = db.prepare(
+          "SELECT id, category_id FROM counterparties WHERE name = ? AND address = ?"
         ).get(row.payee, row.address) as { id: number; category_id: number } | undefined;
 
-        if (!vendor) {
+        if (!counterparty) {
           // Apply categorization rules to determine initial category
           const ruleResult = applyCategorizationRules(db, row.payee);
           const categoryId = ruleResult.categoryId ?? UNCATEGORIZED_CATEGORY_ID;
 
-          const vendorResult = db.prepare(
-            "INSERT INTO vendors (name, address, category_id) VALUES (?, ?, ?)"
+          const counterpartyResult = db.prepare(
+            "INSERT INTO counterparties (name, address, category_id) VALUES (?, ?, ?)"
           ).run(row.payee, row.address, categoryId);
-          vendor = { id: Number(vendorResult.lastInsertRowid), category_id: categoryId };
+          counterparty = { id: Number(counterpartyResult.lastInsertRowid), category_id: categoryId };
         }
 
         // Insert transaction (skip duplicates by reference number)
@@ -129,8 +129,8 @@ router.post("/import", upload.single("file"), (req, res) => {
 
         if (!existing) {
           db.prepare(
-            "INSERT INTO transactions (reference_number, date, statement_id, vendor_id, amount) VALUES (?, ?, ?, ?, ?)"
-          ).run(row.referenceNumber, row.postedDate, statementId, vendor.id, row.amount);
+            "INSERT INTO transactions (reference_number, date, statement_id, counterparty_id, amount) VALUES (?, ?, ?, ?, ?)"
+          ).run(row.referenceNumber, row.postedDate, statementId, counterparty.id, row.amount);
         }
       }
 
@@ -159,10 +159,10 @@ router.get("/:id", (req, res) => {
   }
 
   const transactions = db.prepare(`
-    SELECT t.*, v.name as vendor_name, v.address as vendor_address, v.category_id, v.id as vendor_id, c.name as category_name, c.color as category_color
+    SELECT t.*, cp.name as counterparty_name, cp.address as counterparty_address, cp.category_id, cp.id as counterparty_id, c.name as category_name, c.color as category_color
     FROM transactions t
-    JOIN vendors v ON t.vendor_id = v.id
-    LEFT JOIN categories c ON v.category_id = c.id
+    JOIN counterparties cp ON t.counterparty_id = cp.id
+    LEFT JOIN categories c ON cp.category_id = c.id
     WHERE t.statement_id = ?
     ORDER BY t.date
   `).all(statementId) as Array<{
@@ -170,9 +170,9 @@ router.get("/:id", (req, res) => {
     reference_number: string;
     date: string;
     amount: number;
-    vendor_id: number;
-    vendor_name: string;
-    vendor_address: string;
+    counterparty_id: number;
+    counterparty_name: string;
+    counterparty_address: string;
     category_id: number | null;
     category_name: string | null;
     category_color: string | null;
@@ -180,42 +180,42 @@ router.get("/:id", (req, res) => {
 
   const totalAmount = transactions.reduce((sum, t) => sum + t.amount, 0);
 
-  // For unconfirmed statements, generate vendor grouping suggestions
+  // For unconfirmed statements, generate counterparty grouping suggestions
   let groupingSuggestions: GroupingSuggestionDisplay[] = [];
   if (statement.confirmed_at === null) {
-    // Get unique vendor IDs from this statement
-    const vendorIds = [...new Set(transactions.map((t) => t.vendor_id))];
+    // Get unique counterparty IDs from this statement
+    const counterpartyIds = [...new Set(transactions.map((t) => t.counterparty_id))];
 
-    // Get vendor info for these vendors
-    const vendors = db
+    // Get counterparty info for these counterparties
+    const counterparties = db
       .prepare(
-        `SELECT id, name, parent_vendor_id FROM vendors WHERE id IN (${vendorIds.map(() => "?").join(",")})`
+        `SELECT id, name, parent_counterparty_id FROM counterparties WHERE id IN (${counterpartyIds.map(() => "?").join(",")})`
       )
-      .all(...vendorIds) as VendorInfo[];
+      .all(...counterpartyIds) as CounterpartyInfo[];
 
-    // Get existing parent vendors for potential matching
-    // existingParents: root vendors that don't have children yet (could become parents)
-    // parentsWithChildren: vendors that already have children (for sibling matching)
-    const allRootVendors = getRootVendors();
-    const parentsWithChildrenData = getParentVendorsWithChildren();
+    // Get existing parent counterparties for potential matching
+    // existingParents: root counterparties that don't have children yet (could become parents)
+    // parentsWithChildren: counterparties that already have children (for sibling matching)
+    const allRootCounterparties = getRootCounterparties();
+    const parentsWithChildrenData = getParentCounterpartiesWithChildren();
     const parentIds = new Set(parentsWithChildrenData.map((p) => p.parent.id));
-    const existingParents = allRootVendors.filter((v) => !parentIds.has(v.id));
+    const existingParents = allRootCounterparties.filter((c) => !parentIds.has(c.id));
 
     // Convert to ParentWithChildrenInfo format
     const parentsWithChildren: ParentWithChildrenInfo[] = parentsWithChildrenData.map((p) => ({
-      parent: { id: p.parent.id, name: p.parent.name, parent_vendor_id: p.parent.parent_vendor_id },
-      children: p.children.map((c) => ({ id: c.id, name: c.name, parent_vendor_id: c.parent_vendor_id })),
+      parent: { id: p.parent.id, name: p.parent.name, parent_counterparty_id: p.parent.parent_counterparty_id },
+      children: p.children.map((c) => ({ id: c.id, name: c.name, parent_counterparty_id: c.parent_counterparty_id })),
     }));
 
     // Generate suggestions
-    const suggestions = suggestVendorGroupings(vendors, existingParents, parentsWithChildren);
+    const suggestions = suggestCounterpartyGroupings(counterparties, existingParents, parentsWithChildren);
 
     // Convert to display format
     groupingSuggestions = suggestions.map((s, idx) => ({
       suggestionId: `group_${idx}`,
       parentName: s.parentName,
-      childVendorIds: s.childVendorIds,
-      childVendorNames: s.childVendorNames,
+      childCounterpartyIds: s.childCounterpartyIds,
+      childCounterpartyNames: s.childCounterpartyNames,
       normalizedForm: s.normalizedForm,
     }));
   }
@@ -223,7 +223,7 @@ router.get("/:id", (req, res) => {
   res.send(renderStatementPage(statement, transactions, totalAmount, groupingSuggestions));
 });
 
-// POST /statements/:id/apply-groupings - Apply vendor groupings
+// POST /statements/:id/apply-groupings - Apply counterparty groupings
 router.post("/:id/apply-groupings", (req, res) => {
   const db = getDatabase();
   const statementId = req.params.id;
@@ -231,26 +231,26 @@ router.post("/:id/apply-groupings", (req, res) => {
   db.transaction(() => {
     // Process each potential grouping
     let groupIndex = 0;
-    while (req.body[`group_${groupIndex}_vendor_ids`] !== undefined) {
+    while (req.body[`group_${groupIndex}_counterparty_ids`] !== undefined) {
       const isAccepted = req.body[`accept_group_${groupIndex}`] === "1";
 
       if (isAccepted) {
-        const vendorIdsStr = req.body[`group_${groupIndex}_vendor_ids`] as string;
+        const counterpartyIdsStr = req.body[`group_${groupIndex}_counterparty_ids`] as string;
         const parentName = req.body[`group_${groupIndex}_parent_name`] as string;
-        const vendorIds = vendorIdsStr.split(",").map(Number);
+        const counterpartyIds = counterpartyIdsStr.split(",").map(Number);
 
-        if (vendorIds.length >= 2 && parentName) {
-          // Create a new parent vendor with the canonical name
+        if (counterpartyIds.length >= 2 && parentName) {
+          // Create a new parent counterparty with the canonical name
           const parentResult = db
-            .prepare("INSERT INTO vendors (name, category_id) VALUES (?, ?)")
+            .prepare("INSERT INTO counterparties (name, category_id) VALUES (?, ?)")
             .run(parentName, UNCATEGORIZED_CATEGORY_ID);
           const parentId = parentResult.lastInsertRowid;
 
-          // Update child vendors to point to the new parent
-          const placeholders = vendorIds.map(() => "?").join(",");
+          // Update child counterparties to point to the new parent
+          const placeholders = counterpartyIds.map(() => "?").join(",");
           db.prepare(
-            `UPDATE vendors SET parent_vendor_id = ? WHERE id IN (${placeholders})`
-          ).run(parentId, ...vendorIds);
+            `UPDATE counterparties SET parent_counterparty_id = ? WHERE id IN (${placeholders})`
+          ).run(parentId, ...counterpartyIds);
         }
       }
 
@@ -359,7 +359,7 @@ function renderImportPage(existingAccounts: string[], error?: string): string {
 
 function renderStatementPage(
   statement: { id: number; period: string; account: string; confirmed_at: string | null },
-  transactions: Array<{ id: number; reference_number: string; date: string; amount: number; vendor_name: string; vendor_address: string; category_id: number | null; category_name: string | null; category_color: string | null }>,
+  transactions: Array<{ id: number; reference_number: string; date: string; amount: number; counterparty_name: string; counterparty_address: string; category_id: number | null; category_name: string | null; category_color: string | null }>,
   totalAmount: number,
   groupingSuggestions: GroupingSuggestionDisplay[] = []
 ): string {
@@ -368,7 +368,7 @@ function renderStatementPage(
   const tableHtml = renderTable({
     columns: [
       { key: "date", label: "Date" },
-      { key: "vendor_name", label: "Vendor" },
+      { key: "counterparty_name", label: "Counterparty" },
       {
         key: "category_name",
         label: "Category",
@@ -414,16 +414,16 @@ function renderStatementPage(
          ${renderButton({ label: "Cancel", variant: "normal", type: "submit", onclick: "return confirm('Cancel this import?')" })}
        </form>`;
 
-  // Vendor grouping section (only for unconfirmed statements with suggestions)
+  // Counterparty grouping section (only for unconfirmed statements with suggestions)
   const groupingSection =
     !isConfirmed && groupingSuggestions.length > 0
       ? `
-    <div id="vendor-groupings" class="mt-8 pt-6 border-t border-gray-200 dark:border-gray-700">
-      <h2 class="text-lg font-medium mb-4">Suggested Vendor Groupings</h2>
+    <div id="counterparty-groupings" class="mt-8 pt-6 border-t border-gray-200 dark:border-gray-700">
+      <h2 class="text-lg font-medium mb-4">Suggested Counterparty Groupings</h2>
       <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-        We found vendors that appear to be from the same merchant. Review and apply groupings to organize your vendor list.
+        We found counterparties that appear to be from the same merchant. Review and apply groupings to organize your counterparty list.
       </p>
-      ${renderVendorGroupingReview({
+      ${renderCounterpartyGroupingReview({
         suggestions: groupingSuggestions,
         formAction: `/statements/${statement.id}/apply-groupings`,
         showNormalizedForm: false,

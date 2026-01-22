@@ -6,11 +6,11 @@ interface Migration {
   up: string;
 }
 
-/** The ID for the hardcoded "Uncategorized" category. Used as the default for vendors. */
+/** The ID for the hardcoded "Uncategorized" category. Used as the default for counterparties. */
 export const UNCATEGORIZED_CATEGORY_ID = 1;
 
 /**
- * Default pattern rules for automatic vendor categorization.
+ * Default pattern rules for automatic counterparty categorization.
  * Edit this list to add/remove/modify default rules.
  * These are inserted as 'default_pattern' type and convert to 'pattern' when edited by user.
  *
@@ -78,7 +78,7 @@ const migrations: Migration[] = [
         confirmed_at TEXT
       );
 
-      CREATE TABLE IF NOT EXISTS vendors (
+      CREATE TABLE IF NOT EXISTS counterparties (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         address TEXT,
@@ -90,14 +90,14 @@ const migrations: Migration[] = [
         reference_number TEXT NOT NULL UNIQUE,
         date TEXT NOT NULL,
         statement_id INTEGER NOT NULL,
-        vendor_id INTEGER NOT NULL,
+        counterparty_id INTEGER NOT NULL,
         amount REAL NOT NULL,
         FOREIGN KEY (statement_id) REFERENCES statements(id) ON DELETE CASCADE,
-        FOREIGN KEY (vendor_id) REFERENCES vendors(id)
+        FOREIGN KEY (counterparty_id) REFERENCES counterparties(id)
       );
 
       CREATE INDEX IF NOT EXISTS idx_transactions_statement_id ON transactions(statement_id);
-      CREATE INDEX IF NOT EXISTS idx_transactions_vendor_id ON transactions(vendor_id);
+      CREATE INDEX IF NOT EXISTS idx_transactions_counterparty_id ON transactions(counterparty_id);
       CREATE INDEX IF NOT EXISTS idx_transactions_reference_number ON transactions(reference_number);
     `,
   },
@@ -120,13 +120,13 @@ const migrations: Migration[] = [
       -- Insert Uncategorized first so it gets ID=1 (the hardcoded default)
       INSERT INTO categories (name, parent_category_id) VALUES ('Uncategorized', NULL);
 
-      -- Add category_id column to vendors, defaulting to Uncategorized (1)
-      ALTER TABLE vendors ADD COLUMN category_id INTEGER DEFAULT 1 REFERENCES categories(id);
+      -- Add category_id column to counterparties, defaulting to Uncategorized (1)
+      ALTER TABLE counterparties ADD COLUMN category_id INTEGER DEFAULT 1 REFERENCES categories(id);
 
-      CREATE INDEX idx_vendors_category ON vendors(category_id);
+      CREATE INDEX idx_counterparties_category ON counterparties(category_id);
 
-      -- Update any existing vendors to use Uncategorized
-      UPDATE vendors SET category_id = 1 WHERE category_id IS NULL;
+      -- Update any existing counterparties to use Uncategorized
+      UPDATE counterparties SET category_id = 1 WHERE category_id IS NULL;
     `,
   },
   {
@@ -162,14 +162,14 @@ const migrations: Migration[] = [
   },
   {
     version: 5,
-    name: "make_vendor_category_not_null",
+    name: "make_counterparty_category_not_null",
     up: `
       -- SQLite doesn't support ALTER COLUMN, so we recreate the table
       -- First, ensure any NULL category_id values are set to Uncategorized (1)
-      UPDATE vendors SET category_id = 1 WHERE category_id IS NULL;
+      UPDATE counterparties SET category_id = 1 WHERE category_id IS NULL;
 
       -- Create new table with NOT NULL constraint
-      CREATE TABLE vendors_new (
+      CREATE TABLE counterparties_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         address TEXT,
@@ -178,15 +178,15 @@ const migrations: Migration[] = [
       );
 
       -- Copy data from old table
-      INSERT INTO vendors_new (id, name, address, category, category_id)
-      SELECT id, name, address, category, category_id FROM vendors;
+      INSERT INTO counterparties_new (id, name, address, category, category_id)
+      SELECT id, name, address, category, category_id FROM counterparties;
 
       -- Drop old table and rename new one
-      DROP TABLE vendors;
-      ALTER TABLE vendors_new RENAME TO vendors;
+      DROP TABLE counterparties;
+      ALTER TABLE counterparties_new RENAME TO counterparties;
 
       -- Recreate the index
-      CREATE INDEX idx_vendors_category ON vendors(category_id);
+      CREATE INDEX idx_counterparties_category ON counterparties(category_id);
     `,
   },
   {
@@ -201,13 +201,51 @@ const migrations: Migration[] = [
   },
   {
     version: 7,
-    name: "add_vendor_hierarchy",
+    name: "add_counterparty_hierarchy",
     up: `
-      -- Add parent_vendor_id for vendor hierarchy (tree structure)
-      -- NULL = root vendor, non-NULL = child vendor grouped under parent
-      ALTER TABLE vendors ADD COLUMN parent_vendor_id INTEGER REFERENCES vendors(id) ON DELETE RESTRICT;
+      -- Add parent_counterparty_id for counterparty hierarchy (tree structure)
+      -- NULL = root counterparty, non-NULL = child counterparty grouped under parent
+      ALTER TABLE counterparties ADD COLUMN parent_counterparty_id INTEGER REFERENCES counterparties(id) ON DELETE RESTRICT;
 
-      CREATE INDEX idx_vendors_parent ON vendors(parent_vendor_id);
+      CREATE INDEX idx_counterparties_parent ON counterparties(parent_counterparty_id);
+    `,
+  },
+  {
+    version: 8,
+    name: "add_accounts_table",
+    up: `
+      -- Create accounts table linking institutions and account types to user accounts
+      -- institution_code and account_type_code reference hardcoded registry in TypeScript
+      CREATE TABLE accounts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        institution_code TEXT NOT NULL,
+        account_type_code TEXT NOT NULL,
+        name TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX idx_accounts_institution ON accounts(institution_code);
+      CREATE INDEX idx_accounts_type ON accounts(account_type_code);
+
+      -- Add account_id to statements, replacing the old account text field
+      -- First recreate statements with new schema
+      CREATE TABLE statements_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        period TEXT NOT NULL,
+        account_id INTEGER NOT NULL,
+        confirmed_at TEXT,
+        FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE RESTRICT
+      );
+
+      -- Note: Existing statements with text 'account' field cannot be migrated
+      -- User should wipe database and reimport all statements
+
+      -- Drop old table and rename new one
+      DROP TABLE statements;
+      ALTER TABLE statements_new RENAME TO statements;
+
+      -- Recreate indices
+      CREATE INDEX idx_statements_account ON statements(account_id);
     `,
   },
 ];

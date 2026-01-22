@@ -1,12 +1,12 @@
 import { Router } from "express";
 import { getDatabase } from "../db/index.js";
 import { getCategoryTreeFlat, CategoryWithDepth } from "../db/categoryQueries.js";
-import { getVendorTreeFlat, wouldCreateVendorCycle, getRootVendors, getParentVendorsWithChildren, updateVendorCategoryWithDescendants, getVendorAncestors, VendorWithDepth, Vendor as VendorFromQueries } from "../db/vendorQueries.js";
+import { getCounterpartyTreeFlat, wouldCreateCounterpartyCycle, getRootCounterparties, getParentCounterpartiesWithChildren, updateCounterpartyCategoryWithDescendants, getCounterpartyAncestors, CounterpartyWithDepth, Counterparty as CounterpartyFromQueries } from "../db/counterpartyQueries.js";
 import { UNCATEGORIZED_CATEGORY_ID } from "../db/migrations.js";
 import {
-  suggestVendorGroupings,
-  type VendorInfo,
-} from "../services/vendorGroupingEngine.js";
+  suggestCounterpartyGroupings,
+  type CounterpartyInfo,
+} from "../services/counterpartyGroupingEngine.js";
 import { applyCategorizationRules } from "../services/categorizationEngine.js";
 import {
   layout,
@@ -18,7 +18,7 @@ import {
   renderCategoryPill,
   renderUncategorizedPill,
   renderInlineCategorySelect,
-  renderVendorGroupingReview,
+  renderCounterpartyGroupingReview,
   type GroupingSuggestionDisplay,
 } from "../templates/index.js";
 import type { CategoryOption } from "../templates/index.js";
@@ -26,22 +26,22 @@ import type { CategoryOption } from "../templates/index.js";
 const router = Router();
 
 // Types
-interface Vendor {
+interface Counterparty {
   id: number;
   name: string;
   address: string | null;
   category_id: number | null;
-  parent_vendor_id: number | null;
+  parent_counterparty_id: number | null;
 }
 
-interface VendorWithStats extends Vendor {
+interface CounterpartyWithStats extends Counterparty {
   category_name: string | null;
   category_color: string | null;
   transaction_count: number;
   total_amount: number;
   children_total_amount: number;
   depth: number;
-  parent_vendor_name: string | null;
+  parent_counterparty_name: string | null;
 }
 
 interface Category {
@@ -49,8 +49,8 @@ interface Category {
   name: string;
 }
 
-interface ChildVendorTransactions {
-  vendor: { id: number; name: string };
+interface ChildCounterpartyTransactions {
+  counterparty: { id: number; name: string };
   transactions: Array<{
     id: number;
     date: string;
@@ -62,7 +62,7 @@ interface ChildVendorTransactions {
   totalAmount: number;
 }
 
-// GET /vendors - List all vendors with optional category filter
+// GET /counterparties - List all counterparties with optional category filter
 router.get("/", (req, res) => {
   const db = getDatabase();
   const categoryFilter = typeof req.query.category === "string" ? req.query.category : null;
@@ -81,115 +81,115 @@ router.get("/", (req, res) => {
   const params: number[] = [];
 
   if (categoryFilter === "uncategorized") {
-    whereClause = "WHERE v.category_id = ?";
+    whereClause = "WHERE c.category_id = ?";
     params.push(UNCATEGORIZED_CATEGORY_ID);
   } else if (categoryFilter !== null && categoryFilter !== "") {
     const categoryId = parseInt(categoryFilter, 10);
     if (!isNaN(categoryId)) {
-      whereClause = "WHERE v.category_id = ?";
+      whereClause = "WHERE c.category_id = ?";
       params.push(categoryId);
     }
   }
 
-  // Use recursive CTE to get hierarchical vendor list with depth
-  // Also calculate aggregated children amounts for parent vendors
-  const vendors = db
+  // Use recursive CTE to get hierarchical counterparty list with depth
+  // Also calculate aggregated children amounts for parent counterparties
+  const counterparties = db
     .prepare(
       `
-    WITH RECURSIVE vendor_tree AS (
+    WITH RECURSIVE counterparty_tree AS (
       SELECT
         id,
         name,
         address,
         category_id,
-        parent_vendor_id,
+        parent_counterparty_id,
         0 AS depth,
         name AS sort_path
-      FROM vendors
-      WHERE parent_vendor_id IS NULL
+      FROM counterparties
+      WHERE parent_counterparty_id IS NULL
 
       UNION ALL
 
       SELECT
-        v.id,
-        v.name,
-        v.address,
-        v.category_id,
-        v.parent_vendor_id,
-        vt.depth + 1,
-        vt.sort_path || '/' || v.name
-      FROM vendors v
-      INNER JOIN vendor_tree vt ON v.parent_vendor_id = vt.id
+        cp.id,
+        cp.name,
+        cp.address,
+        cp.category_id,
+        cp.parent_counterparty_id,
+        ct.depth + 1,
+        ct.sort_path || '/' || cp.name
+      FROM counterparties cp
+      INNER JOIN counterparty_tree ct ON cp.parent_counterparty_id = ct.id
     ),
     -- Calculate children totals for each parent
     children_totals AS (
       SELECT
-        parent_vendor_id,
+        parent_counterparty_id,
         COALESCE(SUM(t.amount), 0) AS children_total_amount
-      FROM vendors v
-      LEFT JOIN transactions t ON t.vendor_id = v.id
-      WHERE v.parent_vendor_id IS NOT NULL
-      GROUP BY v.parent_vendor_id
+      FROM counterparties cp
+      LEFT JOIN transactions t ON t.counterparty_id = cp.id
+      WHERE cp.parent_counterparty_id IS NOT NULL
+      GROUP BY cp.parent_counterparty_id
     )
     SELECT
-      vt.id, vt.name, vt.address, vt.category_id, vt.parent_vendor_id, vt.depth,
-      c.name AS category_name,
-      c.color AS category_color,
-      pv.name AS parent_vendor_name,
+      ct.id, ct.name, ct.address, ct.category_id, ct.parent_counterparty_id, ct.depth,
+      cat.name AS category_name,
+      cat.color AS category_color,
+      pc.name AS parent_counterparty_name,
       COUNT(t.id) AS transaction_count,
       COALESCE(SUM(t.amount), 0) AS total_amount,
-      COALESCE(ct.children_total_amount, 0) AS children_total_amount
-    FROM vendor_tree vt
-    LEFT JOIN categories c ON vt.category_id = c.id
-    LEFT JOIN vendors pv ON vt.parent_vendor_id = pv.id
-    LEFT JOIN transactions t ON t.vendor_id = vt.id
-    LEFT JOIN children_totals ct ON ct.parent_vendor_id = vt.id
-    ${whereClause.replace("v.", "vt.")}
-    GROUP BY vt.id
-    ORDER BY vt.sort_path
+      COALESCE(cht.children_total_amount, 0) AS children_total_amount
+    FROM counterparty_tree ct
+    LEFT JOIN categories cat ON ct.category_id = cat.id
+    LEFT JOIN counterparties pc ON ct.parent_counterparty_id = pc.id
+    LEFT JOIN transactions t ON t.counterparty_id = ct.id
+    LEFT JOIN children_totals cht ON cht.parent_counterparty_id = ct.id
+    ${whereClause.replace("c.", "ct.")}
+    GROUP BY ct.id
+    ORDER BY ct.sort_path
   `
     )
-    .all(...params) as VendorWithStats[];
+    .all(...params) as CounterpartyWithStats[];
 
-  res.send(renderVendorsListPage(vendors, categories, categoryFilter, categoryTree, grouped));
+  res.send(renderCounterpartiesListPage(counterparties, categories, categoryFilter, categoryTree, grouped));
 });
 
-// GET /vendors/:id - View vendor details
+// GET /counterparties/:id - View counterparty details
 router.get("/:id", (req, res) => {
   const db = getDatabase();
-  const vendorId = Number(req.params.id);
+  const counterpartyId = Number(req.params.id);
   const showChildTransactions = req.query.showChildTransactions === "true";
 
-  const vendor = db
+  const counterparty = db
     .prepare(
       `
-    SELECT v.*, c.name AS category_name, c.color AS category_color, pv.name AS parent_vendor_name
-    FROM vendors v
-    LEFT JOIN categories c ON v.category_id = c.id
-    LEFT JOIN vendors pv ON v.parent_vendor_id = pv.id
-    WHERE v.id = ?
+    SELECT c.*, cat.name AS category_name, cat.color AS category_color, pc.name AS parent_counterparty_name
+    FROM counterparties c
+    LEFT JOIN categories cat ON c.category_id = cat.id
+    LEFT JOIN counterparties pc ON c.parent_counterparty_id = pc.id
+    WHERE c.id = ?
   `
     )
-    .get(vendorId) as (Vendor & { category_name: string | null; category_color: string | null; parent_vendor_name: string | null }) | undefined;
+    .get(counterpartyId) as (Counterparty & { category_name: string | null; category_color: string | null; parent_counterparty_name: string | null }) | undefined;
 
-  if (!vendor) {
-    res.status(404).send("Vendor not found");
+  if (!counterparty) {
+    res.status(404).send("Counterparty not found");
     return;
   }
 
-  // Get transactions for this vendor
+  // Get transactions for this counterparty
   const transactions = db
     .prepare(
       `
     SELECT t.*, s.period AS statement_period, s.account AS statement_account
     FROM transactions t
     JOIN statements s ON t.statement_id = s.id
-    WHERE t.vendor_id = ?
+    WHERE t.counterparty_id = ?
     ORDER BY t.date DESC
     LIMIT 100
   `
     )
-    .all(vendorId) as Array<{
+    .all(counterpartyId) as Array<{
     id: number;
     date: string;
     amount: number;
@@ -202,35 +202,35 @@ router.get("/:id", (req, res) => {
 
   const allCategories = getCategoryTreeFlat();
 
-  // Get vendor ancestors for breadcrumbs
-  const breadcrumbs = getVendorAncestors(vendorId);
+  // Get counterparty ancestors for breadcrumbs
+  const breadcrumbs = getCounterpartyAncestors(counterpartyId);
 
-  // Get potential parent vendors (root vendors only, excluding self)
-  const potentialParents = getRootVendors().filter((v) => v.id !== vendorId);
+  // Get potential parent counterparties (root counterparties only, excluding self)
+  const potentialParents = getRootCounterparties().filter((c) => c.id !== counterpartyId);
 
-  // Get child vendors of this vendor
-  const childVendors = db
-    .prepare("SELECT id, name FROM vendors WHERE parent_vendor_id = ? ORDER BY name")
-    .all(vendorId) as Array<{ id: number; name: string }>;
+  // Get child counterparties of this counterparty
+  const childCounterparties = db
+    .prepare("SELECT id, name FROM counterparties WHERE parent_counterparty_id = ? ORDER BY name")
+    .all(counterpartyId) as Array<{ id: number; name: string }>;
 
-  // Get child vendor transactions if requested and this is a parent with no own transactions
-  let childVendorTransactions: ChildVendorTransactions[] = [];
-  const isParentWithNoOwnTransactions = childVendors.length > 0 && transactions.length === 0;
+  // Get child counterparty transactions if requested and this is a parent with no own transactions
+  let childCounterpartyTransactions: ChildCounterpartyTransactions[] = [];
+  const isParentWithNoOwnTransactions = childCounterparties.length > 0 && transactions.length === 0;
 
   if (showChildTransactions && isParentWithNoOwnTransactions) {
-    childVendorTransactions = childVendors.map((cv) => {
-      const cvTransactions = db
+    childCounterpartyTransactions = childCounterparties.map((cc) => {
+      const ccTransactions = db
         .prepare(
           `
         SELECT t.*, s.period AS statement_period, s.account AS statement_account
         FROM transactions t
         JOIN statements s ON t.statement_id = s.id
-        WHERE t.vendor_id = ?
+        WHERE t.counterparty_id = ?
         ORDER BY t.date DESC
         LIMIT 100
       `
         )
-        .all(cv.id) as Array<{
+        .all(cc.id) as Array<{
         id: number;
         date: string;
         amount: number;
@@ -238,94 +238,94 @@ router.get("/:id", (req, res) => {
         statement_period: string;
         statement_account: string;
       }>;
-      const cvTotal = cvTransactions.reduce((sum, t) => sum + t.amount, 0);
+      const ccTotal = ccTransactions.reduce((sum, t) => sum + t.amount, 0);
       return {
-        vendor: cv,
-        transactions: cvTransactions,
-        totalAmount: cvTotal,
+        counterparty: cc,
+        transactions: ccTransactions,
+        totalAmount: ccTotal,
       };
     });
   }
 
   res.send(
-    renderVendorDetailPage(
-      vendor,
+    renderCounterpartyDetailPage(
+      counterparty,
       transactions,
       totalAmount,
       allCategories,
       potentialParents,
-      childVendors,
+      childCounterparties,
       isParentWithNoOwnTransactions,
       showChildTransactions,
-      childVendorTransactions,
+      childCounterpartyTransactions,
       breadcrumbs
     )
   );
 });
 
-// POST /vendors/:id/categorize - Assign category to vendor and all descendants
+// POST /counterparties/:id/categorize - Assign category to counterparty and all descendants
 router.post("/:id/categorize", (req, res) => {
-  const vendorId = Number(req.params.id);
+  const counterpartyId = Number(req.params.id);
   const categoryIdRaw = req.body.category_id;
   const categoryId =
     categoryIdRaw && categoryIdRaw !== "" ? Number(categoryIdRaw) : UNCATEGORIZED_CATEGORY_ID;
 
-  // Update vendor and all descendants with the same category
-  updateVendorCategoryWithDescendants(vendorId, categoryId);
+  // Update counterparty and all descendants with the same category
+  updateCounterpartyCategoryWithDescendants(counterpartyId, categoryId);
 
   // Redirect back based on where the request came from
   const returnTo = req.body.return_to;
   if (returnTo === "uncategorized") {
-    res.redirect("/vendors?category=uncategorized");
+    res.redirect("/counterparties?category=uncategorized");
   } else if (returnTo === "list") {
-    res.redirect("/vendors");
+    res.redirect("/counterparties");
   } else if (returnTo && returnTo.startsWith("/")) {
     // Allow arbitrary paths that start with / (e.g., analysis pages)
     res.redirect(returnTo);
   } else {
-    res.redirect(`/vendors/${vendorId}`);
+    res.redirect(`/counterparties/${counterpartyId}`);
   }
 });
 
-// POST /vendors/:id/reparent - Set parent vendor
+// POST /counterparties/:id/reparent - Set parent counterparty
 router.post("/:id/reparent", (req, res) => {
   const db = getDatabase();
-  const vendorId = Number(req.params.id);
-  const parentIdRaw = req.body.parent_vendor_id;
-  const parentVendorId = parentIdRaw && parentIdRaw !== "" ? Number(parentIdRaw) : null;
+  const counterpartyId = Number(req.params.id);
+  const parentIdRaw = req.body.parent_counterparty_id;
+  const parentCounterpartyId = parentIdRaw && parentIdRaw !== "" ? Number(parentIdRaw) : null;
 
   // Get current parent before update
-  const currentVendor = db
-    .prepare("SELECT parent_vendor_id FROM vendors WHERE id = ?")
-    .get(vendorId) as { parent_vendor_id: number | null } | undefined;
-  const oldParentId = currentVendor?.parent_vendor_id ?? null;
+  const currentCounterparty = db
+    .prepare("SELECT parent_counterparty_id FROM counterparties WHERE id = ?")
+    .get(counterpartyId) as { parent_counterparty_id: number | null } | undefined;
+  const oldParentId = currentCounterparty?.parent_counterparty_id ?? null;
 
   // Check for cycle if setting a parent
-  if (parentVendorId !== null && wouldCreateVendorCycle(vendorId, parentVendorId)) {
+  if (parentCounterpartyId !== null && wouldCreateCounterpartyCycle(counterpartyId, parentCounterpartyId)) {
     res.status(400).send("Cannot set parent: would create a cycle");
     return;
   }
 
-  db.prepare("UPDATE vendors SET parent_vendor_id = ? WHERE id = ?").run(
-    parentVendorId,
-    vendorId
+  db.prepare("UPDATE counterparties SET parent_counterparty_id = ? WHERE id = ?").run(
+    parentCounterpartyId,
+    counterpartyId
   );
 
   // If removing from a parent, check if old parent should be auto-deleted
   // (when it has no remaining children and no transactions of its own)
   let oldParentDeleted = false;
-  if (oldParentId !== null && oldParentId !== parentVendorId) {
+  if (oldParentId !== null && oldParentId !== parentCounterpartyId) {
     const childCount = db
-      .prepare("SELECT COUNT(*) as cnt FROM vendors WHERE parent_vendor_id = ?")
+      .prepare("SELECT COUNT(*) as cnt FROM counterparties WHERE parent_counterparty_id = ?")
       .get(oldParentId) as { cnt: number };
 
     if (childCount.cnt === 0) {
       const transactionCount = db
-        .prepare("SELECT COUNT(*) as cnt FROM transactions WHERE vendor_id = ?")
+        .prepare("SELECT COUNT(*) as cnt FROM transactions WHERE counterparty_id = ?")
         .get(oldParentId) as { cnt: number };
 
       if (transactionCount.cnt === 0) {
-        db.prepare("DELETE FROM vendors WHERE id = ?").run(oldParentId);
+        db.prepare("DELETE FROM counterparties WHERE id = ?").run(oldParentId);
         oldParentDeleted = true;
       }
     }
@@ -333,44 +333,44 @@ router.post("/:id/reparent", (req, res) => {
 
   // When adding to a parent, redirect to the new parent
   // When removing from a parent, redirect to the old parent (unless it was deleted)
-  if (parentVendorId !== null) {
-    res.redirect(`/vendors/${parentVendorId}`);
+  if (parentCounterpartyId !== null) {
+    res.redirect(`/counterparties/${parentCounterpartyId}`);
   } else if (oldParentId !== null && !oldParentDeleted) {
-    res.redirect(`/vendors/${oldParentId}`);
+    res.redirect(`/counterparties/${oldParentId}`);
   } else {
-    res.redirect(`/vendors/${vendorId}`);
+    res.redirect(`/counterparties/${counterpartyId}`);
   }
 });
 
-// POST /vendors/bulk-categorize - Assign category to multiple vendors
+// POST /counterparties/bulk-categorize - Assign category to multiple counterparties
 router.post("/bulk-categorize", (req, res) => {
   const db = getDatabase();
-  const vendorIds: number[] = Array.isArray(req.body.vendor_ids)
-    ? req.body.vendor_ids.map(Number)
-    : req.body.vendor_ids
-      ? [Number(req.body.vendor_ids)]
+  const counterpartyIds: number[] = Array.isArray(req.body.counterparty_ids)
+    ? req.body.counterparty_ids.map(Number)
+    : req.body.counterparty_ids
+      ? [Number(req.body.counterparty_ids)]
       : [];
   const categoryIdRaw = req.body.category_id;
   const categoryId =
     categoryIdRaw && categoryIdRaw !== "" ? Number(categoryIdRaw) : UNCATEGORIZED_CATEGORY_ID;
 
-  if (vendorIds.length > 0 && categoryId !== null) {
-    const placeholders = vendorIds.map(() => "?").join(",");
+  if (counterpartyIds.length > 0 && categoryId !== null) {
+    const placeholders = counterpartyIds.map(() => "?").join(",");
     db.prepare(
-      `UPDATE vendors SET category_id = ? WHERE id IN (${placeholders})`
-    ).run(categoryId, ...vendorIds);
+      `UPDATE counterparties SET category_id = ? WHERE id IN (${placeholders})`
+    ).run(categoryId, ...counterpartyIds);
   }
 
-  res.redirect("/vendors?category=uncategorized");
+  res.redirect("/counterparties?category=uncategorized");
 });
 
-// POST /vendors/group - Create a new parent vendor and group selected vendors under it
+// POST /counterparties/group - Create a new parent counterparty and group selected counterparties under it
 router.post("/group", (req, res) => {
   const db = getDatabase();
-  const vendorIds: number[] = Array.isArray(req.body.vendor_ids)
-    ? req.body.vendor_ids.map(Number)
-    : req.body.vendor_ids
-      ? [Number(req.body.vendor_ids)]
+  const counterpartyIds: number[] = Array.isArray(req.body.counterparty_ids)
+    ? req.body.counterparty_ids.map(Number)
+    : req.body.counterparty_ids
+      ? [Number(req.body.counterparty_ids)]
       : [];
   const parentName = (req.body.parent_name || "").trim();
   const categoryIdRaw = req.body.category_id;
@@ -378,40 +378,40 @@ router.post("/group", (req, res) => {
     categoryIdRaw && categoryIdRaw !== "" ? Number(categoryIdRaw) : UNCATEGORIZED_CATEGORY_ID;
 
   // Validate inputs
-  if (vendorIds.length < 2) {
-    res.redirect("/vendors?error=Select at least 2 vendors to group");
+  if (counterpartyIds.length < 2) {
+    res.redirect("/counterparties?error=Select at least 2 counterparties to group");
     return;
   }
 
   if (!parentName) {
-    res.redirect("/vendors?error=Parent vendor name is required");
+    res.redirect("/counterparties?error=Parent counterparty name is required");
     return;
   }
 
   db.transaction(() => {
-    // Check if a vendor with this name already exists
-    const existingVendor = db
-      .prepare("SELECT id, category_id FROM vendors WHERE name = ?")
+    // Check if a counterparty with this name already exists
+    const existingCounterparty = db
+      .prepare("SELECT id, category_id FROM counterparties WHERE name = ?")
       .get(parentName) as { id: number; category_id: number } | undefined;
 
     let parentId: number;
     let effectiveCategoryId: number;
 
-    if (existingVendor) {
-      // Don't allow using an existing vendor as the parent if it's one of the selected children
-      if (vendorIds.includes(existingVendor.id)) {
-        throw new Error("Parent name matches one of the selected vendors");
+    if (existingCounterparty) {
+      // Don't allow using an existing counterparty as the parent if it's one of the selected children
+      if (counterpartyIds.includes(existingCounterparty.id)) {
+        throw new Error("Parent name matches one of the selected counterparties");
       }
-      parentId = existingVendor.id;
+      parentId = existingCounterparty.id;
       // If a category was specified, update the parent; otherwise use the parent's existing category
       if (categoryId !== UNCATEGORIZED_CATEGORY_ID) {
-        db.prepare("UPDATE vendors SET category_id = ? WHERE id = ?").run(categoryId, parentId);
+        db.prepare("UPDATE counterparties SET category_id = ? WHERE id = ?").run(categoryId, parentId);
         effectiveCategoryId = categoryId;
       } else {
-        effectiveCategoryId = existingVendor.category_id;
+        effectiveCategoryId = existingCounterparty.category_id;
       }
     } else {
-      // Create a new parent vendor
+      // Create a new parent counterparty
       // If no category specified, apply categorization rules to the parent name
       let newParentCategoryId = categoryId;
       if (categoryId === UNCATEGORIZED_CATEGORY_ID) {
@@ -419,23 +419,23 @@ router.post("/group", (req, res) => {
         newParentCategoryId = ruleResult.categoryId ?? UNCATEGORIZED_CATEGORY_ID;
       }
       const parentResult = db
-        .prepare("INSERT INTO vendors (name, category_id) VALUES (?, ?)")
+        .prepare("INSERT INTO counterparties (name, category_id) VALUES (?, ?)")
         .run(parentName, newParentCategoryId);
       parentId = Number(parentResult.lastInsertRowid);
       effectiveCategoryId = newParentCategoryId;
     }
 
-    // Update child vendors to point to the parent and inherit the parent's category
-    const placeholders = vendorIds.map(() => "?").join(",");
+    // Update child counterparties to point to the parent and inherit the parent's category
+    const placeholders = counterpartyIds.map(() => "?").join(",");
     db.prepare(
-      `UPDATE vendors SET parent_vendor_id = ?, category_id = ? WHERE id IN (${placeholders})`
-    ).run(parentId, effectiveCategoryId, ...vendorIds);
+      `UPDATE counterparties SET parent_counterparty_id = ?, category_id = ? WHERE id IN (${placeholders})`
+    ).run(parentId, effectiveCategoryId, ...counterpartyIds);
   })();
 
-  res.redirect("/vendors");
+  res.redirect("/counterparties");
 });
 
-// POST /vendors/merge - Merge two vendor groups into one
+// POST /counterparties/merge - Merge two counterparty groups into one
 router.post("/merge", (req, res) => {
   const db = getDatabase();
   const keepParentId = Number(req.body.keep_parent_id);
@@ -449,7 +449,7 @@ router.post("/merge", (req, res) => {
   db.transaction(() => {
     // Get the category of the parent we're keeping
     const keepParent = db
-      .prepare("SELECT category_id FROM vendors WHERE id = ?")
+      .prepare("SELECT category_id FROM counterparties WHERE id = ?")
       .get(keepParentId) as { category_id: number } | undefined;
 
     if (!keepParent) {
@@ -461,59 +461,59 @@ router.post("/merge", (req, res) => {
     // Move all children of the merge parent to the keep parent
     // and update their category to match the new parent
     db.prepare(
-      "UPDATE vendors SET parent_vendor_id = ?, category_id = ? WHERE parent_vendor_id = ?"
+      "UPDATE counterparties SET parent_counterparty_id = ?, category_id = ? WHERE parent_counterparty_id = ?"
     ).run(keepParentId, keepCategoryId, mergeParentId);
 
     // Check if the merge parent has any transactions of its own
     const mergeParentTransactions = db
-      .prepare("SELECT COUNT(*) as cnt FROM transactions WHERE vendor_id = ?")
+      .prepare("SELECT COUNT(*) as cnt FROM transactions WHERE counterparty_id = ?")
       .get(mergeParentId) as { cnt: number };
 
     if (mergeParentTransactions.cnt > 0) {
       // The merge parent has transactions, so convert it to a child of keep parent
       db.prepare(
-        "UPDATE vendors SET parent_vendor_id = ?, category_id = ? WHERE id = ?"
+        "UPDATE counterparties SET parent_counterparty_id = ?, category_id = ? WHERE id = ?"
       ).run(keepParentId, keepCategoryId, mergeParentId);
     } else {
       // The merge parent has no transactions, delete it
-      db.prepare("DELETE FROM vendors WHERE id = ?").run(mergeParentId);
+      db.prepare("DELETE FROM counterparties WHERE id = ?").run(mergeParentId);
     }
   })();
 
-  res.redirect(`/vendors/${keepParentId}`);
+  res.redirect(`/counterparties/${keepParentId}`);
 });
 
-// POST /vendors/suggest-groupings - Analyze all vendors and show grouping suggestions
+// POST /counterparties/suggest-groupings - Analyze all counterparties and show grouping suggestions
 router.post("/suggest-groupings", (_req, res) => {
   const db = getDatabase();
 
-  // Get all ungrouped vendors (no parent)
-  const vendors = db
-    .prepare("SELECT id, name, parent_vendor_id FROM vendors WHERE parent_vendor_id IS NULL")
-    .all() as VendorInfo[];
+  // Get all ungrouped counterparties (no parent)
+  const counterparties = db
+    .prepare("SELECT id, name, parent_counterparty_id FROM counterparties WHERE parent_counterparty_id IS NULL")
+    .all() as CounterpartyInfo[];
 
-  // Get existing parent vendors for potential matching
-  const existingParents = getRootVendors();
+  // Get existing parent counterparties for potential matching
+  const existingParents = getRootCounterparties();
 
   // Get parents that already have children (for sibling matching)
-  const parentsWithChildren = getParentVendorsWithChildren();
+  const parentsWithChildren = getParentCounterpartiesWithChildren();
 
   // Generate suggestions (enable debug logging for inspection)
-  const suggestions = suggestVendorGroupings(vendors, existingParents, parentsWithChildren, { debug: true });
+  const suggestions = suggestCounterpartyGroupings(counterparties, existingParents, parentsWithChildren, { debug: true });
 
   // Convert to display format
   const groupingSuggestions: GroupingSuggestionDisplay[] = suggestions.map((s, idx) => ({
     suggestionId: `group_${idx}`,
     parentName: s.parentName,
-    childVendorIds: s.childVendorIds,
-    childVendorNames: s.childVendorNames,
+    childCounterpartyIds: s.childCounterpartyIds,
+    childCounterpartyNames: s.childCounterpartyNames,
     normalizedForm: s.normalizedForm,
   }));
 
-  res.send(renderVendorGroupingsPage(groupingSuggestions));
+  res.send(renderCounterpartyGroupingsPage(groupingSuggestions));
 });
 
-// POST /vendors/apply-groupings - Apply selected vendor groupings
+// POST /counterparties/apply-groupings - Apply selected counterparty groupings
 router.post("/apply-groupings", (req, res) => {
   const db = getDatabase();
 
@@ -522,50 +522,50 @@ router.post("/apply-groupings", (req, res) => {
   db.transaction(() => {
     // Process each potential grouping
     let groupIndex = 0;
-    while (req.body[`group_${groupIndex}_vendor_ids`] !== undefined) {
+    while (req.body[`group_${groupIndex}_counterparty_ids`] !== undefined) {
       const isAccepted = req.body[`accept_group_${groupIndex}`] === "1";
 
       if (isAccepted) {
-        const vendorIdsStr = req.body[`group_${groupIndex}_vendor_ids`] as string;
+        const counterpartyIdsStr = req.body[`group_${groupIndex}_counterparty_ids`] as string;
         const parentName = req.body[`group_${groupIndex}_parent_name`] as string;
-        const vendorIds = vendorIdsStr.split(",").map(Number);
+        const counterpartyIds = counterpartyIdsStr.split(",").map(Number);
 
         if (parentName) {
-          // Check if a vendor with this name already exists
-          const existingVendor = db
-            .prepare("SELECT id, category_id FROM vendors WHERE name = ?")
+          // Check if a counterparty with this name already exists
+          const existingCounterparty = db
+            .prepare("SELECT id, category_id FROM counterparties WHERE name = ?")
             .get(parentName) as { id: number; category_id: number } | undefined;
 
           let parentId: number;
           let parentCategoryId: number;
 
-          if (existingVendor) {
-            // Use existing vendor as parent (if it's not one of the children)
-            if (!vendorIds.includes(existingVendor.id)) {
-              parentId = existingVendor.id;
-              parentCategoryId = existingVendor.category_id;
+          if (existingCounterparty) {
+            // Use existing counterparty as parent (if it's not one of the children)
+            if (!counterpartyIds.includes(existingCounterparty.id)) {
+              parentId = existingCounterparty.id;
+              parentCategoryId = existingCounterparty.category_id;
             } else {
               // Skip this group - parent name matches a child
               groupIndex++;
               continue;
             }
           } else {
-            // Create a new parent vendor with the canonical name
+            // Create a new parent counterparty with the canonical name
             // Apply categorization rules to determine initial category
             const ruleResult = applyCategorizationRules(db, parentName);
             const newCategoryId = ruleResult.categoryId ?? UNCATEGORIZED_CATEGORY_ID;
             const parentResult = db
-              .prepare("INSERT INTO vendors (name, category_id) VALUES (?, ?)")
+              .prepare("INSERT INTO counterparties (name, category_id) VALUES (?, ?)")
               .run(parentName, newCategoryId);
             parentId = Number(parentResult.lastInsertRowid);
             parentCategoryId = newCategoryId;
           }
 
-          // Update child vendors to point to the parent and inherit the parent's category
-          const placeholders = vendorIds.map(() => "?").join(",");
+          // Update child counterparties to point to the parent and inherit the parent's category
+          const placeholders = counterpartyIds.map(() => "?").join(",");
           db.prepare(
-            `UPDATE vendors SET parent_vendor_id = ?, category_id = ? WHERE id IN (${placeholders})`
-          ).run(parentId, parentCategoryId, ...vendorIds);
+            `UPDATE counterparties SET parent_counterparty_id = ?, category_id = ? WHERE id IN (${placeholders})`
+          ).run(parentId, parentCategoryId, ...counterpartyIds);
 
           appliedCount++;
         }
@@ -575,33 +575,33 @@ router.post("/apply-groupings", (req, res) => {
     }
   })();
 
-  res.redirect(`/vendors?grouped=${appliedCount}`);
+  res.redirect(`/counterparties?grouped=${appliedCount}`);
 });
 
 // ============================================================================
 // Render Functions
 // ============================================================================
 
-function renderVendorBreadcrumbs(vendors: VendorFromQueries[]): string {
-  const links = vendors.map((v, i) => {
-    const isLast = i === vendors.length - 1;
+function renderCounterpartyBreadcrumbs(counterparties: CounterpartyFromQueries[]): string {
+  const links = counterparties.map((c, i) => {
+    const isLast = i === counterparties.length - 1;
     if (isLast) {
-      return `<span class="text-gray-900 dark:text-gray-100">${escapeHtml(v.name)}</span>`;
+      return `<span class="text-gray-900 dark:text-gray-100">${escapeHtml(c.name)}</span>`;
     }
-    return `<a href="/vendors/${v.id}" class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">${escapeHtml(v.name)}</a>`;
+    return `<a href="/counterparties/${c.id}" class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">${escapeHtml(c.name)}</a>`;
   });
 
   return `
     <nav class="flex items-center gap-2 text-sm mb-4">
-      <a href="/vendors" class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">Vendors</a>
+      <a href="/counterparties" class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">Counterparties</a>
       <span class="text-gray-400">/</span>
       ${links.join('<span class="text-gray-400">/</span>')}
     </nav>
   `;
 }
 
-function renderVendorsListPage(
-  vendors: VendorWithStats[],
+function renderCounterpartiesListPage(
+  counterparties: CounterpartyWithStats[],
   categories: Category[],
   currentFilter: string | null,
   categoryTree: CategoryWithDepth[],
@@ -621,7 +621,7 @@ function renderVendorsListPage(
     grouped !== null
       ? `
     <div class="mb-6 px-4 py-3 text-sm rounded-lg bg-green-50 text-green-700 border border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800">
-      Applied ${grouped} vendor grouping${grouped === 1 ? "" : "s"}.
+      Applied ${grouped} counterparty grouping${grouped === 1 ? "" : "s"}.
     </div>
   `
       : "";
@@ -653,46 +653,46 @@ function renderVendorsListPage(
     })
     .join("");
 
-  // Build vendor rows with checkboxes
-  const vendorRowsHtml = vendors.length === 0
-    ? `<tr><td colspan="5" class="px-6 py-8 text-center text-gray-400 dark:text-gray-500">${currentFilter ? "No vendors match this filter." : "No vendors yet."}</td></tr>`
-    : vendors.map((v) => {
-        const indent = "\u00A0\u00A0\u00A0\u00A0".repeat(v.depth);
-        const prefix = v.depth > 0 ? "\u2514 " : "";
-        // Only allow selecting root vendors that don't have children
-        const hasChildren = vendors.some((ov) => ov.parent_vendor_id === v.id);
-        const isParent = v.parent_vendor_id === null && hasChildren;
-        const isChild = v.depth > 0;
-        const canSelect = v.parent_vendor_id === null && !hasChildren;
+  // Build counterparty rows with checkboxes
+  const counterpartyRowsHtml = counterparties.length === 0
+    ? `<tr><td colspan="5" class="px-6 py-8 text-center text-gray-400 dark:text-gray-500">${currentFilter ? "No counterparties match this filter." : "No counterparties yet."}</td></tr>`
+    : counterparties.map((c) => {
+        const indent = "\u00A0\u00A0\u00A0\u00A0".repeat(c.depth);
+        const prefix = c.depth > 0 ? "\u2514 " : "";
+        // Only allow selecting root counterparties that don't have children
+        const hasChildren = counterparties.some((oc) => oc.parent_counterparty_id === c.id);
+        const isParent = c.parent_counterparty_id === null && hasChildren;
+        const isChild = c.depth > 0;
+        const canSelect = c.parent_counterparty_id === null && !hasChildren;
 
         const checkbox = canSelect
-          ? `<input type="checkbox" name="vendor_ids" value="${v.id}" class="vendor-checkbox h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500 dark:bg-gray-800" />`
+          ? `<input type="checkbox" name="counterparty_ids" value="${c.id}" class="counterparty-checkbox h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500 dark:bg-gray-800" />`
           : `<span class="w-4 h-4 inline-block"></span>`;
 
         const categoryCell = renderInlineCategorySelect({
-          vendorId: v.id,
-          currentCategoryId: v.category_id,
-          currentCategoryName: v.category_name,
-          currentCategoryColor: v.category_color,
+          counterpartyId: c.id,
+          currentCategoryId: c.category_id,
+          currentCategoryName: c.category_name,
+          currentCategoryColor: c.category_color,
           categories: inlineSelectCategories,
         });
 
-        // Draggable: root vendors (with or without children) can be dragged
-        const canBeDragged = v.parent_vendor_id === null;
-        // Droppable: root vendors (with or without children) can accept new children
-        const canAcceptChild = v.parent_vendor_id === null;
-        // Is this vendor an orphan (root with no children) or a parent (root with children)?
-        const isOrphan = v.parent_vendor_id === null && !hasChildren;
+        // Draggable: root counterparties (with or without children) can be dragged
+        const canBeDragged = c.parent_counterparty_id === null;
+        // Droppable: root counterparties (with or without children) can accept new children
+        const canAcceptChild = c.parent_counterparty_id === null;
+        // Is this counterparty an orphan (root with no children) or a parent (root with children)?
+        const isOrphan = c.parent_counterparty_id === null && !hasChildren;
         const dragAttrs = canBeDragged
-          ? `draggable="true" data-vendor-id="${v.id}" data-vendor-name="${escapeHtml(v.name).replace(/"/g, "&quot;")}" data-has-children="${hasChildren}"`
+          ? `draggable="true" data-counterparty-id="${c.id}" data-counterparty-name="${escapeHtml(c.name).replace(/"/g, "&quot;")}" data-has-children="${hasChildren}"`
           : "";
         const dropAttrs = canAcceptChild
-          ? `data-drop-target="true" data-parent-id="${v.id}" data-parent-name="${escapeHtml(v.name).replace(/"/g, "&quot;")}" data-is-orphan="${isOrphan}" data-has-children="${hasChildren}"`
+          ? `data-drop-target="true" data-parent-id="${c.id}" data-parent-name="${escapeHtml(c.name).replace(/"/g, "&quot;")}" data-is-orphan="${isOrphan}" data-has-children="${hasChildren}"`
           : "";
 
-        // Collapse/expand toggle for parent vendors
+        // Collapse/expand toggle for parent counterparties
         const toggleButton = isParent
-          ? `<button type="button" class="parent-toggle mr-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-transform" data-parent-id="${v.id}" aria-expanded="false">
+          ? `<button type="button" class="parent-toggle mr-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-transform" data-parent-id="${c.id}" aria-expanded="false">
                <svg class="w-4 h-4 transform -rotate-90 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
                </svg>
@@ -702,27 +702,27 @@ function renderVendorsListPage(
         // For parents: show children total when collapsed, nothing when expanded
         // For non-parents: show their own amount
         const amountCell = isParent
-          ? `<span class="parent-amount-collapsed font-mono">${formatCurrency(v.children_total_amount + v.total_amount)}</span><span class="parent-amount-expanded hidden font-mono"></span>`
-          : `<span class="font-mono">${formatCurrency(v.total_amount)}</span>`;
+          ? `<span class="parent-amount-collapsed font-mono">${formatCurrency(c.children_total_amount + c.total_amount)}</span><span class="parent-amount-expanded hidden font-mono"></span>`
+          : `<span class="font-mono">${formatCurrency(c.total_amount)}</span>`;
 
         // Child rows: hidden by default, include parent reference
         const childAttrs = isChild
-          ? `data-child-of="${v.parent_vendor_id}" style="display: none;"`
+          ? `data-child-of="${c.parent_counterparty_id}" style="display: none;"`
           : "";
-        const parentAttr = isParent ? `data-is-parent="${v.id}"` : "";
+        const parentAttr = isParent ? `data-is-parent="${c.id}"` : "";
 
         return `
-          <tr class="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 vendor-row" ${dragAttrs} ${dropAttrs} ${childAttrs} ${parentAttr}>
+          <tr class="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 counterparty-row" ${dragAttrs} ${dropAttrs} ${childAttrs} ${parentAttr}>
             <td class="px-3 py-3 text-sm">
               ${checkbox}
             </td>
             <td class="px-3 py-3 text-sm">
               <span class="inline-flex items-center">
-                ${toggleButton}<a href="/vendors/${v.id}" class="hover:underline">${indent}${prefix}${escapeHtml(v.name)}</a>
+                ${toggleButton}<a href="/counterparties/${c.id}" class="hover:underline">${indent}${prefix}${escapeHtml(c.name)}</a>
               </span>
             </td>
             <td class="px-3 py-3 text-sm">${categoryCell}</td>
-            <td class="px-3 py-3 text-sm text-right">${v.transaction_count}</td>
+            <td class="px-3 py-3 text-sm text-right">${c.transaction_count}</td>
             <td class="px-3 py-3 text-sm text-right">${amountCell}</td>
           </tr>
         `;
@@ -734,7 +734,7 @@ function renderVendorsListPage(
         <thead>
           <tr class="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50">
             <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider w-10">
-              <input type="checkbox" id="select-all-vendors" class="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500 dark:bg-gray-800" />
+              <input type="checkbox" id="select-all-counterparties" class="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500 dark:bg-gray-800" />
             </th>
             <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Name</th>
             <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Category</th>
@@ -743,20 +743,20 @@ function renderVendorsListPage(
           </tr>
         </thead>
         <tbody>
-          ${vendorRowsHtml}
+          ${counterpartyRowsHtml}
         </tbody>
       </table>
     </div>
   `;
 
-  // Group vendors form (pinned to bottom, shown when vendors selected)
+  // Group counterparties form (pinned to bottom, shown when counterparties selected)
   const groupFormHtml = `
-    <div id="group-vendors-panel" class="hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 shadow-lg p-4 z-50">
-      <form method="POST" action="/vendors/group" id="group-vendors-form" class="max-w-4xl mx-auto">
+    <div id="group-counterparties-panel" class="hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 shadow-lg p-4 z-50">
+      <form method="POST" action="/counterparties/group" id="group-counterparties-form" class="max-w-4xl mx-auto">
         <div id="group-selected-inputs"></div>
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
           <div>
-            <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1" for="parent_name">Parent Vendor Name</label>
+            <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1" for="parent_name">Parent Counterparty Name</label>
             <input type="text" id="parent_name" name="parent_name" required placeholder="e.g., Amazon" class="${inputClasses} w-full" />
           </div>
           <div>
@@ -767,8 +767,8 @@ function renderVendorsListPage(
             </select>
           </div>
           <div>
-            <button type="submit" id="group-vendors-btn" disabled class="w-full px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed dark:disabled:bg-gray-700 dark:disabled:text-gray-500 transition-colors">
-              Group Vendors
+            <button type="submit" id="group-counterparties-btn" disabled class="w-full px-4 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed dark:disabled:bg-gray-700 dark:disabled:text-gray-500 transition-colors">
+              Group Counterparties
             </button>
           </div>
           <div class="flex items-center">
@@ -785,12 +785,12 @@ function renderVendorsListPage(
       <div class="flex items-center justify-center min-h-screen px-4">
         <div class="fixed inset-0 bg-black/30 dark:bg-black/50" onclick="hideAddChildModal()"></div>
         <div class="relative bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 max-w-sm w-full shadow-lg">
-          <h3 class="text-lg font-medium mb-2">Add Child Vendor</h3>
+          <h3 class="text-lg font-medium mb-2">Add Child Counterparty</h3>
           <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
             Add <span id="addChildName" class="font-medium text-gray-900 dark:text-gray-100"></span> as a child of <span id="addChildParentName" class="font-medium text-gray-900 dark:text-gray-100"></span>? The child will inherit the parent's category.
           </p>
           <form id="addChildForm" method="POST" class="flex gap-2 justify-end">
-            <input type="hidden" name="parent_vendor_id" id="addChildParentId" value="">
+            <input type="hidden" name="parent_counterparty_id" id="addChildParentId" value="">
             <button type="button" onclick="hideAddChildModal()" class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors">
               Cancel
             </button>
@@ -809,16 +809,16 @@ function renderVendorsListPage(
       <div class="flex items-center justify-center min-h-screen px-4">
         <div class="fixed inset-0 bg-black/30 dark:bg-black/50" onclick="hideCreateGroupModal()"></div>
         <div class="relative bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 max-w-md w-full shadow-lg">
-          <h3 class="text-lg font-medium mb-2">Create Vendor Group</h3>
+          <h3 class="text-lg font-medium mb-2">Create Counterparty Group</h3>
           <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-            Group <span id="createGroupVendor1" class="font-medium text-gray-900 dark:text-gray-100"></span> and <span id="createGroupVendor2" class="font-medium text-gray-900 dark:text-gray-100"></span> under a new parent vendor.
+            Group <span id="createGroupCounterparty1" class="font-medium text-gray-900 dark:text-gray-100"></span> and <span id="createGroupCounterparty2" class="font-medium text-gray-900 dark:text-gray-100"></span> under a new parent counterparty.
           </p>
-          <form id="createGroupForm" method="POST" action="/vendors/group">
-            <input type="hidden" name="vendor_ids" id="createGroupVendorId1" value="">
-            <input type="hidden" name="vendor_ids" id="createGroupVendorId2" value="">
+          <form id="createGroupForm" method="POST" action="/counterparties/group">
+            <input type="hidden" name="counterparty_ids" id="createGroupCounterpartyId1" value="">
+            <input type="hidden" name="counterparty_ids" id="createGroupCounterpartyId2" value="">
             <div class="space-y-4 mb-4">
               <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="createGroupParentName">Parent Vendor Name</label>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="createGroupParentName">Parent Counterparty Name</label>
                 <input type="text" id="createGroupParentName" name="parent_name" required placeholder="e.g., Amazon" class="${inputClasses}" />
               </div>
               <div>
@@ -843,17 +843,17 @@ function renderVendorsListPage(
     </div>
   `;
 
-  // Modal for merging two parent vendor groups
+  // Modal for merging two parent counterparty groups
   const mergeGroupsModalHtml = `
     <div id="mergeGroupsModal" class="hidden fixed inset-0 z-50 overflow-y-auto">
       <div class="flex items-center justify-center min-h-screen px-4">
         <div class="fixed inset-0 bg-black/30 dark:bg-black/50" onclick="hideMergeGroupsModal()"></div>
         <div class="relative bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 max-w-md w-full shadow-lg">
-          <h3 class="text-lg font-medium mb-2">Merge Vendor Groups</h3>
+          <h3 class="text-lg font-medium mb-2">Merge Counterparty Groups</h3>
           <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-            Merge <span id="mergeGroupVendor1" class="font-medium text-gray-900 dark:text-gray-100"></span> and <span id="mergeGroupVendor2" class="font-medium text-gray-900 dark:text-gray-100"></span> into a single vendor group.
+            Merge <span id="mergeGroupCounterparty1" class="font-medium text-gray-900 dark:text-gray-100"></span> and <span id="mergeGroupCounterparty2" class="font-medium text-gray-900 dark:text-gray-100"></span> into a single counterparty group.
           </p>
-          <form id="mergeGroupsForm" method="POST" action="/vendors/merge">
+          <form id="mergeGroupsForm" method="POST" action="/counterparties/merge">
             <input type="hidden" name="merge_parent_id" id="mergeGroupMergeId" value="">
             <div class="space-y-4 mb-4">
               <div>
@@ -864,7 +864,7 @@ function renderVendorsListPage(
                 </select>
               </div>
               <p class="text-xs text-gray-500 dark:text-gray-400">
-                All vendors from the other group will be moved into the selected parent. The moved vendors will inherit the selected parent's category.
+                All counterparties from the other group will be moved into the selected parent. The moved counterparties will inherit the selected parent's category.
               </p>
             </div>
             <div class="flex gap-2 justify-end">
@@ -881,16 +881,16 @@ function renderVendorsListPage(
     </div>
   `;
 
-  // JavaScript for handling vendor selection, grouping, and drag-drop
+  // JavaScript for handling counterparty selection, grouping, and drag-drop
   const scriptHtml = `
     <script>
       (function() {
-        var checkboxes = document.querySelectorAll('.vendor-checkbox');
-        var selectAllCheckbox = document.getElementById('select-all-vendors');
-        var groupPanel = document.getElementById('group-vendors-panel');
+        var checkboxes = document.querySelectorAll('.counterparty-checkbox');
+        var selectAllCheckbox = document.getElementById('select-all-counterparties');
+        var groupPanel = document.getElementById('group-counterparties-panel');
         var selectedInputsContainer = document.getElementById('group-selected-inputs');
         var selectedCount = document.getElementById('selected-count');
-        var groupBtn = document.getElementById('group-vendors-btn');
+        var groupBtn = document.getElementById('group-counterparties-btn');
         var parentNameInput = document.getElementById('parent_name');
 
         function updateUI() {
@@ -905,7 +905,7 @@ function renderVendorsListPage(
             groupPanel.classList.add('hidden');
           }
 
-          // Enable button only if 2+ vendors selected AND parent name entered
+          // Enable button only if 2+ counterparties selected AND parent name entered
           groupBtn.disabled = !(count >= 2 && hasName);
 
           // Update selected count display
@@ -913,7 +913,7 @@ function renderVendorsListPage(
 
           // Update hidden inputs for form submission
           selectedInputsContainer.innerHTML = selected.map(function(cb) {
-            return '<input type="hidden" name="vendor_ids" value="' + cb.value + '" />';
+            return '<input type="hidden" name="counterparty_ids" value="' + cb.value + '" />';
           }).join('');
 
           // Update select all checkbox state
@@ -954,24 +954,24 @@ function renderVendorsListPage(
         // ===============================
         var draggableRows = document.querySelectorAll('tr[draggable="true"]');
         var dropTargets = document.querySelectorAll('tr[data-drop-target="true"]');
-        var draggedVendorId = null;
-        var draggedVendorName = null;
+        var draggedCounterpartyId = null;
+        var draggedCounterpartyName = null;
         var draggedHasChildren = false;
 
         draggableRows.forEach(function(row) {
           row.addEventListener('dragstart', function(e) {
-            draggedVendorId = row.dataset.vendorId;
-            draggedVendorName = row.dataset.vendorName;
+            draggedCounterpartyId = row.dataset.counterpartyId;
+            draggedCounterpartyName = row.dataset.counterpartyName;
             draggedHasChildren = row.dataset.hasChildren === 'true';
             row.classList.add('opacity-50');
             e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', draggedVendorId);
+            e.dataTransfer.setData('text/plain', draggedCounterpartyId);
           });
 
           row.addEventListener('dragend', function() {
             row.classList.remove('opacity-50');
-            draggedVendorId = null;
-            draggedVendorName = null;
+            draggedCounterpartyId = null;
+            draggedCounterpartyName = null;
             draggedHasChildren = false;
             // Remove all drop highlights
             dropTargets.forEach(function(target) {
@@ -983,7 +983,7 @@ function renderVendorsListPage(
         dropTargets.forEach(function(target) {
           target.addEventListener('dragover', function(e) {
             // Only allow drop if not dropping on itself
-            if (target.dataset.parentId !== draggedVendorId) {
+            if (target.dataset.parentId !== draggedCounterpartyId) {
               e.preventDefault();
               e.dataTransfer.dropEffect = 'move';
               target.classList.add('bg-green-50', 'dark:bg-green-900/20', 'ring-2', 'ring-green-500', 'ring-inset');
@@ -1002,7 +1002,7 @@ function renderVendorsListPage(
             target.classList.remove('bg-green-50', 'dark:bg-green-900/20', 'ring-2', 'ring-green-500', 'ring-inset');
 
             // Don't allow dropping on self
-            if (target.dataset.parentId === draggedVendorId) {
+            if (target.dataset.parentId === draggedCounterpartyId) {
               return;
             }
 
@@ -1010,15 +1010,15 @@ function renderVendorsListPage(
 
             // Both have children: merge groups
             if (draggedHasChildren && targetHasChildren) {
-              showMergeGroupsModal(draggedVendorId, draggedVendorName, target.dataset.parentId, target.dataset.parentName);
+              showMergeGroupsModal(draggedCounterpartyId, draggedCounterpartyName, target.dataset.parentId, target.dataset.parentName);
             }
             // Target is orphan (no children) and dragged is also orphan: create new group
             else if (target.dataset.isOrphan === 'true' && !draggedHasChildren) {
-              showCreateGroupModal(draggedVendorId, draggedVendorName, target.dataset.parentId, target.dataset.parentName);
+              showCreateGroupModal(draggedCounterpartyId, draggedCounterpartyName, target.dataset.parentId, target.dataset.parentName);
             }
             // Otherwise: add as child to existing parent
             else {
-              showAddChildModal(draggedVendorId, draggedVendorName, target.dataset.parentId, target.dataset.parentName);
+              showAddChildModal(draggedCounterpartyId, draggedCounterpartyName, target.dataset.parentId, target.dataset.parentName);
             }
           });
         });
@@ -1029,7 +1029,7 @@ function renderVendorsListPage(
         document.getElementById('addChildName').textContent = childName;
         document.getElementById('addChildParentName').textContent = parentName;
         document.getElementById('addChildParentId').value = parentId;
-        document.getElementById('addChildForm').action = '/vendors/' + childId + '/reparent';
+        document.getElementById('addChildForm').action = '/counterparties/' + childId + '/reparent';
         document.getElementById('addChildModal').classList.remove('hidden');
       }
 
@@ -1037,12 +1037,12 @@ function renderVendorsListPage(
         document.getElementById('addChildModal').classList.add('hidden');
       }
 
-      // Modal functions for creating a new group from two orphan vendors
-      function showCreateGroupModal(vendor1Id, vendor1Name, vendor2Id, vendor2Name) {
-        document.getElementById('createGroupVendor1').textContent = vendor1Name;
-        document.getElementById('createGroupVendor2').textContent = vendor2Name;
-        document.getElementById('createGroupVendorId1').value = vendor1Id;
-        document.getElementById('createGroupVendorId2').value = vendor2Id;
+      // Modal functions for creating a new group from two orphan counterparties
+      function showCreateGroupModal(counterparty1Id, counterparty1Name, counterparty2Id, counterparty2Name) {
+        document.getElementById('createGroupCounterparty1').textContent = counterparty1Name;
+        document.getElementById('createGroupCounterparty2').textContent = counterparty2Name;
+        document.getElementById('createGroupCounterpartyId1').value = counterparty1Id;
+        document.getElementById('createGroupCounterpartyId2').value = counterparty2Id;
         document.getElementById('createGroupParentName').value = '';
         document.getElementById('createGroupCategory').value = '';
         document.getElementById('createGroupModal').classList.remove('hidden');
@@ -1054,32 +1054,32 @@ function renderVendorsListPage(
         document.getElementById('createGroupModal').classList.add('hidden');
       }
 
-      // Modal functions for merging two parent vendor groups
-      var mergeVendor1Id = null;
-      var mergeVendor1Name = null;
-      var mergeVendor2Id = null;
-      var mergeVendor2Name = null;
+      // Modal functions for merging two parent counterparty groups
+      var mergeCounterparty1Id = null;
+      var mergeCounterparty1Name = null;
+      var mergeCounterparty2Id = null;
+      var mergeCounterparty2Name = null;
 
-      function showMergeGroupsModal(vendor1Id, vendor1Name, vendor2Id, vendor2Name) {
-        mergeVendor1Id = vendor1Id;
-        mergeVendor1Name = vendor1Name;
-        mergeVendor2Id = vendor2Id;
-        mergeVendor2Name = vendor2Name;
+      function showMergeGroupsModal(counterparty1Id, counterparty1Name, counterparty2Id, counterparty2Name) {
+        mergeCounterparty1Id = counterparty1Id;
+        mergeCounterparty1Name = counterparty1Name;
+        mergeCounterparty2Id = counterparty2Id;
+        mergeCounterparty2Name = counterparty2Name;
 
-        document.getElementById('mergeGroupVendor1').textContent = vendor1Name;
-        document.getElementById('mergeGroupVendor2').textContent = vendor2Name;
+        document.getElementById('mergeGroupCounterparty1').textContent = counterparty1Name;
+        document.getElementById('mergeGroupCounterparty2').textContent = counterparty2Name;
 
         // Set up the dropdown options
         var option1 = document.getElementById('mergeGroupOption1');
         var option2 = document.getElementById('mergeGroupOption2');
-        option1.value = vendor1Id;
-        option1.textContent = vendor1Name;
-        option2.value = vendor2Id;
-        option2.textContent = vendor2Name;
+        option1.value = counterparty1Id;
+        option1.textContent = counterparty1Name;
+        option2.value = counterparty2Id;
+        option2.textContent = counterparty2Name;
 
         // Select the first option by default and update the hidden field
         var select = document.getElementById('mergeGroupKeepParent');
-        select.value = vendor1Id;
+        select.value = counterparty1Id;
         updateMergeHiddenField();
 
         document.getElementById('mergeGroupsModal').classList.remove('hidden');
@@ -1093,7 +1093,7 @@ function renderVendorsListPage(
         var select = document.getElementById('mergeGroupKeepParent');
         var keepId = select.value;
         // The merge_parent_id is the one NOT selected (the one being merged into the other)
-        var mergeId = (keepId === mergeVendor1Id) ? mergeVendor2Id : mergeVendor1Id;
+        var mergeId = (keepId === mergeCounterparty1Id) ? mergeCounterparty2Id : mergeCounterparty1Id;
         document.getElementById('mergeGroupMergeId').value = mergeId;
       }
 
@@ -1101,7 +1101,7 @@ function renderVendorsListPage(
       document.getElementById('mergeGroupKeepParent').addEventListener('change', updateMergeHiddenField);
 
       // ===============================
-      // Parent vendor collapse/expand functionality
+      // Parent counterparty collapse/expand functionality
       // ===============================
       (function() {
         var toggleButtons = document.querySelectorAll('.parent-toggle');
@@ -1143,14 +1143,14 @@ function renderVendorsListPage(
 
   const content = `
     <div class="flex items-center justify-between mb-2">
-      <h1 class="text-2xl font-semibold">Vendors</h1>
-      <form action="/vendors/suggest-groupings" method="POST">
-        ${renderButton({ label: "Suggest Vendor Groupings", type: "submit" })}
+      <h1 class="text-2xl font-semibold">Counterparties</h1>
+      <form action="/counterparties/suggest-groupings" method="POST">
+        ${renderButton({ label: "Suggest Counterparty Groupings", type: "submit" })}
       </form>
     </div>
     <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
-      A list of all the vendors you've transacted with across all statements.
-      Select multiple root vendors (without children) to group them under a new parent, or drag a vendor onto another to add it as a child.
+      A list of all the counterparties you've transacted with across all statements.
+      Select multiple root counterparties (without children) to group them under a new parent, or drag a counterparty onto another to add it as a child.
     </p>
     ${groupedMessage}
     ${filterHtml}
@@ -1162,11 +1162,11 @@ function renderVendorsListPage(
     ${scriptHtml}
   `;
 
-  return layout({ title: "Vendors", content, activePath: "/vendors" });
+  return layout({ title: "Counterparties", content, activePath: "/counterparties" });
 }
 
-function renderVendorDetailPage(
-  vendor: Vendor & { category_name: string | null; category_color: string | null; parent_vendor_name: string | null },
+function renderCounterpartyDetailPage(
+  counterparty: Counterparty & { category_name: string | null; category_color: string | null; parent_counterparty_name: string | null },
   transactions: Array<{
     id: number;
     date: string;
@@ -1178,11 +1178,11 @@ function renderVendorDetailPage(
   totalAmount: number,
   allCategories: CategoryWithDepth[],
   potentialParents: Array<{ id: number; name: string }>,
-  childVendors: Array<{ id: number; name: string }>,
+  childCounterparties: Array<{ id: number; name: string }>,
   isParentWithNoOwnTransactions: boolean,
   showChildTransactions: boolean,
-  childVendorTransactions: ChildVendorTransactions[],
-  breadcrumbs: VendorFromQueries[]
+  childCounterpartyTransactions: ChildCounterpartyTransactions[],
+  breadcrumbs: CounterpartyFromQueries[]
 ): string {
   const inputClasses =
     "w-full px-4 py-2 text-base border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-200 dark:focus:ring-gray-700 focus:border-gray-300 dark:focus:border-gray-600 transition-colors";
@@ -1190,13 +1190,13 @@ function renderVendorDetailPage(
   const categoryOptions = allCategories
     .map((c) => {
       const indent = "\u00A0\u00A0".repeat(c.depth);
-      const selected = c.id === vendor.category_id ? " selected" : "";
+      const selected = c.id === counterparty.category_id ? " selected" : "";
       return `<option value="${c.id}"${selected}>${indent}${escapeHtml(c.name)}</option>`;
     })
     .join("");
 
   const categoryFormHtml = `
-    <form method="POST" action="/vendors/${vendor.id}/categorize" class="flex items-end gap-2">
+    <form method="POST" action="/counterparties/${counterparty.id}/categorize" class="flex items-end gap-2">
       <div class="flex flex-col gap-1 flex-1">
         <label class="text-sm font-medium text-gray-500 dark:text-gray-400" for="category_id">Category</label>
         <select class="${inputClasses}" id="category_id" name="category_id">
@@ -1208,45 +1208,45 @@ function renderVendorDetailPage(
     </form>
   `;
 
-  // Parent vendor selector (only show if this vendor has no children - can't make a parent into a child)
-  const canHaveParent = childVendors.length === 0;
+  // Parent counterparty selector (only show if this counterparty has no children - can't make a parent into a child)
+  const canHaveParent = childCounterparties.length === 0;
   const parentOptions = potentialParents
     .map((p) => {
-      const selected = p.id === vendor.parent_vendor_id ? " selected" : "";
+      const selected = p.id === counterparty.parent_counterparty_id ? " selected" : "";
       return `<option value="${p.id}"${selected}>${escapeHtml(p.name)}</option>`;
     })
     .join("");
 
   const parentFormHtml = canHaveParent
     ? `
-    <form method="POST" action="/vendors/${vendor.id}/reparent" class="flex items-end gap-2">
+    <form method="POST" action="/counterparties/${counterparty.id}/reparent" class="flex items-end gap-2">
       <div class="flex flex-col gap-1 flex-1">
-        <label class="text-sm font-medium text-gray-500 dark:text-gray-400" for="parent_vendor_id">Parent Vendor</label>
-        <select class="${inputClasses}" id="parent_vendor_id" name="parent_vendor_id">
-          <option value=""${vendor.parent_vendor_id === null ? " selected" : ""}>None (Root Vendor)</option>
+        <label class="text-sm font-medium text-gray-500 dark:text-gray-400" for="parent_counterparty_id">Parent Counterparty</label>
+        <select class="${inputClasses}" id="parent_counterparty_id" name="parent_counterparty_id">
+          <option value=""${counterparty.parent_counterparty_id === null ? " selected" : ""}>None (Root Counterparty)</option>
           ${parentOptions}
         </select>
       </div>
       ${renderButton({ label: "Save", variant: "proceed", type: "submit" })}
     </form>
   `
-    : `<p class="text-sm text-gray-500 dark:text-gray-400">This vendor has child vendors and cannot be moved under another parent.</p>`;
+    : `<p class="text-sm text-gray-500 dark:text-gray-400">This counterparty has child counterparties and cannot be moved under another parent.</p>`;
 
-  // Child vendors list with remove buttons
-  const childVendorsHtml =
-    childVendors.length > 0
+  // Child counterparties list with remove buttons
+  const childCounterpartiesHtml =
+    childCounterparties.length > 0
       ? `
     <div class="mt-4">
-      <h3 class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Child Vendors</h3>
+      <h3 class="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Child Counterparties</h3>
       <ul class="space-y-1">
-        ${childVendors
+        ${childCounterparties
           .map(
-            (cv) => `
+            (cc) => `
           <li class="flex items-center gap-2 group">
-            <a href="/vendors/${cv.id}" class="text-sm hover:underline flex-1">${escapeHtml(cv.name)}</a>
+            <a href="/counterparties/${cc.id}" class="text-sm hover:underline flex-1">${escapeHtml(cc.name)}</a>
             <button
               type="button"
-              onclick="showRemoveChildModal(${cv.id}, '${escapeHtml(cv.name).replace(/'/g, "\\'")}', ${vendor.id})"
+              onclick="showRemoveChildModal(${cc.id}, '${escapeHtml(cc.name).replace(/'/g, "\\'")}', ${counterparty.id})"
               class="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-opacity"
               title="Remove from parent"
             >
@@ -1266,12 +1266,12 @@ function renderVendorDetailPage(
       <div class="flex items-center justify-center min-h-screen px-4">
         <div class="fixed inset-0 bg-black/30 dark:bg-black/50" onclick="hideRemoveChildModal()"></div>
         <div class="relative bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 max-w-sm w-full shadow-lg">
-          <h3 class="text-lg font-medium mb-2">Remove Child Vendor</h3>
+          <h3 class="text-lg font-medium mb-2">Remove Child Counterparty</h3>
           <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-            Remove <span id="removeChildName" class="font-medium text-gray-900 dark:text-gray-100"></span> from this vendor? Its category will be preserved.
+            Remove <span id="removeChildName" class="font-medium text-gray-900 dark:text-gray-100"></span> from this counterparty? Its category will be preserved.
           </p>
           <form id="removeChildForm" method="POST" class="flex gap-2 justify-end">
-            <input type="hidden" name="parent_vendor_id" value="">
+            <input type="hidden" name="parent_counterparty_id" value="">
             <button type="button" onclick="hideRemoveChildModal()" class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors">
               Cancel
             </button>
@@ -1286,7 +1286,7 @@ function renderVendorDetailPage(
     <script>
       function showRemoveChildModal(childId, childName, parentId) {
         document.getElementById('removeChildName').textContent = childName;
-        document.getElementById('removeChildForm').action = '/vendors/' + childId + '/reparent';
+        document.getElementById('removeChildForm').action = '/counterparties/' + childId + '/reparent';
         document.getElementById('removeChildModal').classList.remove('hidden');
       }
       function hideRemoveChildModal() {
@@ -1309,20 +1309,20 @@ function renderVendorDetailPage(
       },
     ],
     rows: transactions,
-    emptyMessage: "No transactions for this vendor.",
+    emptyMessage: "No transactions for this counterparty.",
   });
 
-  // Render child vendor transactions grouped by vendor with collapsible sections
+  // Render child counterparty transactions grouped by counterparty with collapsible sections
   const renderChildTransactionsHtml = (): string => {
-    if (!showChildTransactions || childVendorTransactions.length === 0) {
+    if (!showChildTransactions || childCounterpartyTransactions.length === 0) {
       return "";
     }
 
-    const grandTotal = childVendorTransactions.reduce((sum, cv) => sum + cv.totalAmount, 0);
-    const totalTransactionCount = childVendorTransactions.reduce((sum, cv) => sum + cv.transactions.length, 0);
+    const grandTotal = childCounterpartyTransactions.reduce((sum, cc) => sum + cc.totalAmount, 0);
+    const totalTransactionCount = childCounterpartyTransactions.reduce((sum, cc) => sum + cc.transactions.length, 0);
 
-    const vendorSections = childVendorTransactions.map((cv, index) => {
-      const transactionRows = cv.transactions.map((t) => `
+    const counterpartySections = childCounterpartyTransactions.map((cc, index) => {
+      const transactionRows = cc.transactions.map((t) => `
         <tr class="border-b border-gray-100 dark:border-gray-800">
           <td class="px-6 py-3 text-sm">${t.date}</td>
           <td class="px-6 py-3 text-sm">${t.statement_account}</td>
@@ -1335,7 +1335,7 @@ function renderVendorDetailPage(
         <div class="border-b border-gray-200 dark:border-gray-800 last:border-b-0">
           <button
             type="button"
-            onclick="toggleVendorSection(${index})"
+            onclick="toggleCounterpartySection(${index})"
             class="w-full px-6 py-4 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
           >
             <div class="flex items-center gap-3">
@@ -1343,13 +1343,13 @@ function renderVendorDetailPage(
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
               </svg>
               <span class="font-semibold text-gray-900 dark:text-gray-100">
-                <a href="/vendors/${cv.vendor.id}" class="hover:underline" onclick="event.stopPropagation()">${escapeHtml(cv.vendor.name)}</a>
+                <a href="/counterparties/${cc.counterparty.id}" class="hover:underline" onclick="event.stopPropagation()">${escapeHtml(cc.counterparty.name)}</a>
               </span>
-              <span class="text-sm text-gray-500 dark:text-gray-400">(${cv.transactions.length} transactions)</span>
+              <span class="text-sm text-gray-500 dark:text-gray-400">(${cc.transactions.length} transactions)</span>
             </div>
-            <span class="font-semibold font-mono text-gray-900 dark:text-gray-100">${formatCurrency(cv.totalAmount)}</span>
+            <span class="font-semibold font-mono text-gray-900 dark:text-gray-100">${formatCurrency(cc.totalAmount)}</span>
           </button>
-          <div id="vendor-section-${index}" class="overflow-hidden">
+          <div id="counterparty-section-${index}" class="overflow-hidden">
             <table class="w-full">
               <tbody>
                 ${transactionRows}
@@ -1368,21 +1368,21 @@ function renderVendorDetailPage(
 
       <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-sm overflow-hidden">
         <div class="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 px-6 py-3 flex items-center justify-between">
-          <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Child Vendor Transactions</span>
+          <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Child Counterparty Transactions</span>
           <div class="flex gap-2">
             <button type="button" onclick="expandAllSections()" class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Expand All</button>
             <span class="text-gray-300 dark:text-gray-600">|</span>
             <button type="button" onclick="collapseAllSections()" class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Collapse All</button>
           </div>
         </div>
-        ${vendorSections}
+        ${counterpartySections}
       </div>
 
       <script>
-        var vendorSectionCount = ${childVendorTransactions.length};
+        var counterpartySectionCount = ${childCounterpartyTransactions.length};
 
-        function toggleVendorSection(index) {
-          var section = document.getElementById('vendor-section-' + index);
+        function toggleCounterpartySection(index) {
+          var section = document.getElementById('counterparty-section-' + index);
           var chevron = document.getElementById('chevron-' + index);
           if (section.style.maxHeight && section.style.maxHeight !== '0px') {
             section.style.maxHeight = '0px';
@@ -1394,8 +1394,8 @@ function renderVendorDetailPage(
         }
 
         function expandAllSections() {
-          for (var i = 0; i < vendorSectionCount; i++) {
-            var section = document.getElementById('vendor-section-' + i);
+          for (var i = 0; i < counterpartySectionCount; i++) {
+            var section = document.getElementById('counterparty-section-' + i);
             var chevron = document.getElementById('chevron-' + i);
             section.style.maxHeight = section.scrollHeight + 'px';
             chevron.classList.add('-rotate-180');
@@ -1403,8 +1403,8 @@ function renderVendorDetailPage(
         }
 
         function collapseAllSections() {
-          for (var i = 0; i < vendorSectionCount; i++) {
-            var section = document.getElementById('vendor-section-' + i);
+          for (var i = 0; i < counterpartySectionCount; i++) {
+            var section = document.getElementById('counterparty-section-' + i);
             var chevron = document.getElementById('chevron-' + i);
             section.style.maxHeight = '0px';
             chevron.classList.remove('-rotate-180');
@@ -1423,8 +1423,8 @@ function renderVendorDetailPage(
   const showChildTransactionsButtonHtml = isParentWithNoOwnTransactions && !showChildTransactions
     ? `
       <div class="text-center py-8">
-        <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">This vendor has no transactions of its own, but has ${childVendors.length} child vendor(s).</p>
-        ${renderLinkButton({ label: "Show Child Transactions", href: `/vendors/${vendor.id}?showChildTransactions=true` })}
+        <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">This counterparty has no transactions of its own, but has ${childCounterparties.length} child counterparty(ies).</p>
+        ${renderLinkButton({ label: "Show Child Transactions", href: `/counterparties/${counterparty.id}?showChildTransactions=true` })}
       </div>
     `
     : "";
@@ -1440,22 +1440,22 @@ function renderVendorDetailPage(
       ${tableHtml}
     `;
 
-  const categoryBadge = vendor.category_name
+  const categoryBadge = counterparty.category_name
     ? renderCategoryPill({
-        name: vendor.category_name,
-        color: vendor.category_color,
-        categoryId: vendor.category_id,
+        name: counterparty.category_name,
+        color: counterparty.category_color,
+        categoryId: counterparty.category_id,
       })
     : renderUncategorizedPill();
 
-  const breadcrumbHtml = renderVendorBreadcrumbs(breadcrumbs);
+  const breadcrumbHtml = renderCounterpartyBreadcrumbs(breadcrumbs);
 
   const content = `
     ${breadcrumbHtml}
     <div class="mb-6">
-      <h1 class="text-2xl font-semibold mb-2">${escapeHtml(vendor.name)}</h1>
+      <h1 class="text-2xl font-semibold mb-2">${escapeHtml(counterparty.name)}</h1>
       <div class="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
-        ${vendor.address ? `<span>${escapeHtml(vendor.address)}</span><span>·</span>` : ""}
+        ${counterparty.address ? `<span>${escapeHtml(counterparty.address)}</span><span>·</span>` : ""}
         ${categoryBadge}
       </div>
     </div>
@@ -1467,9 +1467,9 @@ function renderVendorDetailPage(
       </div>
 
       <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6">
-        <h2 class="text-lg font-medium mb-4">Vendor Hierarchy</h2>
+        <h2 class="text-lg font-medium mb-4">Counterparty Hierarchy</h2>
         ${parentFormHtml}
-        ${childVendorsHtml}
+        ${childCounterpartiesHtml}
       </div>
     </div>
 
@@ -1477,17 +1477,17 @@ function renderVendorDetailPage(
   `;
 
   return layout({
-    title: vendor.name,
+    title: counterparty.name,
     content,
-    activePath: "/vendors",
+    activePath: "/counterparties",
   });
 }
 
-function renderVendorGroupingsPage(suggestions: GroupingSuggestionDisplay[]): string {
+function renderCounterpartyGroupingsPage(suggestions: GroupingSuggestionDisplay[]): string {
   const noSuggestionsHtml = `
     <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-sm">
       <div class="px-12 py-8 text-center text-gray-400 dark:text-gray-500">
-        No vendor grouping suggestions found. All vendors appear to be unique or already grouped.
+        No counterparty grouping suggestions found. All counterparties appear to be unique or already grouped.
       </div>
     </div>
   `;
@@ -1495,30 +1495,30 @@ function renderVendorGroupingsPage(suggestions: GroupingSuggestionDisplay[]): st
   const suggestionsHtml =
     suggestions.length === 0
       ? noSuggestionsHtml
-      : renderVendorGroupingReview({
+      : renderCounterpartyGroupingReview({
           suggestions,
-          formAction: "/vendors/apply-groupings",
+          formAction: "/counterparties/apply-groupings",
           showNormalizedForm: true,
         });
 
   const content = `
     <div class="mb-6">
-      <h1 class="text-2xl font-semibold">Vendor Grouping Suggestions</h1>
+      <h1 class="text-2xl font-semibold">Counterparty Grouping Suggestions</h1>
     </div>
 
     <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
-      This page identifies vendors that may be from the same merchant based on name similarity.
-      Applying a grouping creates a parent vendor with a cleaned name (no numbers or special characters).
+      This page identifies counterparties that may be from the same merchant based on name similarity.
+      Applying a grouping creates a parent counterparty with a cleaned name (no numbers or special characters).
     </p>
 
     ${suggestionsHtml}
 
     <div class="mt-6">
-      ${renderLinkButton({ label: "\u2190 Back to Vendors", href: "/vendors" })}
+      ${renderLinkButton({ label: "\u2190 Back to Counterparties", href: "/counterparties" })}
     </div>
   `;
 
-  return layout({ title: "Vendor Groupings", content, activePath: "/vendors" });
+  return layout({ title: "Counterparty Groupings", content, activePath: "/counterparties" });
 }
 
 export default router;

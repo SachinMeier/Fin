@@ -32,8 +32,8 @@ export type { ActionRowOptions } from "./actionRow.js";
 export { renderGlobRulesWalkthrough } from "./globRulesWalkthrough.js";
 export type { GlobRulesWalkthroughOptions } from "./globRulesWalkthrough.js";
 
-export { renderVendorGroupingReview, renderGroupingSuggestionsBanner } from "./vendorGroupingReview.js";
-export type { VendorGroupingReviewOptions, GroupingSuggestionDisplay } from "./vendorGroupingReview.js";
+export { renderCounterpartyGroupingReview, renderGroupingSuggestionsBanner } from "./counterpartyGroupingReview.js";
+export type { CounterpartyGroupingReviewOptions, GroupingSuggestionDisplay } from "./counterpartyGroupingReview.js";
 
 export { renderPieChart, renderAnalysisSummary } from "./pieChart.js";
 export type { PieSlice, PieChartOptions } from "./pieChart.js";

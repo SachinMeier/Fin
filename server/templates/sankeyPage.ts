@@ -13,7 +13,7 @@ import { formatCurrency, escapeHtml } from "./table.js";
 import { renderInlineCategorySelect } from "./categoryPill.js";
 import type { CategoryOption } from "./categorySelector.js";
 
-export interface VendorTableItem {
+export interface CounterpartyTableItem {
   id: number;
   name: string;
   amount: number;
@@ -60,10 +60,10 @@ export interface SankeyPageOptions {
   };
   /** Optional subtitle/context */
   subtitle?: string;
-  /** Optional vendors to show in a table below the diagram */
-  vendorTable?: {
+  /** Optional counterparties to show in a table below the diagram */
+  counterpartyTable?: {
     title: string;
-    vendors: VendorTableItem[];
+    counterparties: CounterpartyTableItem[];
     /** Available categories for the category selector */
     categories: CategoryOption[];
     /** Return path after category change (current page URL) */
@@ -72,39 +72,39 @@ export interface SankeyPageOptions {
 }
 
 /**
- * Render a vendor table section with category selectors
+ * Render a counterparty table section with category selectors
  */
-function renderVendorTableSection(
+function renderCounterpartyTableSection(
   title: string,
-  vendors: VendorTableItem[],
+  counterparties: CounterpartyTableItem[],
   totalAmount: number,
   categories: CategoryOption[],
   returnPath: string
 ): string {
-  if (vendors.length === 0) {
+  if (counterparties.length === 0) {
     return "";
   }
 
-  const rows = vendors.map((v) => {
+  const rows = counterparties.map((c) => {
     const percentage = totalAmount > 0
-      ? (Math.abs(v.amount) / Math.abs(totalAmount)) * 100
+      ? (Math.abs(c.amount) / Math.abs(totalAmount)) * 100
       : 0;
 
     const categorySelect = renderInlineCategorySelect({
-      vendorId: v.id,
-      currentCategoryId: v.categoryId,
-      currentCategoryName: v.categoryName,
-      currentCategoryColor: v.categoryColor,
+      counterpartyId: c.id,
+      currentCategoryId: c.categoryId,
+      currentCategoryName: c.categoryName,
+      currentCategoryColor: c.categoryColor,
       categories,
       returnPath,
     });
 
     return `
       <tr class="border-b border-gray-100 dark:border-gray-800 last:border-0">
-        <td class="py-3 pr-4 text-sm text-gray-900 dark:text-gray-100">${escapeHtml(v.name)}</td>
-        <td class="py-3 px-4 text-sm text-gray-900 dark:text-gray-100 text-right tabular-nums">${formatCurrency(v.amount)}</td>
+        <td class="py-3 pr-4 text-sm text-gray-900 dark:text-gray-100">${escapeHtml(c.name)}</td>
+        <td class="py-3 px-4 text-sm text-gray-900 dark:text-gray-100 text-right tabular-nums">${formatCurrency(c.amount)}</td>
         <td class="py-3 px-4 text-sm text-gray-500 dark:text-gray-400 text-right tabular-nums">${formatPercentage(percentage)}</td>
-        <td class="py-3 px-4 text-sm text-gray-500 dark:text-gray-400 text-right tabular-nums">${v.transactionCount}</td>
+        <td class="py-3 px-4 text-sm text-gray-500 dark:text-gray-400 text-right tabular-nums">${c.transactionCount}</td>
         <td class="py-3 pl-4 text-sm">${categorySelect}</td>
       </tr>
     `;
@@ -117,7 +117,7 @@ function renderVendorTableSection(
         <table class="w-full">
           <thead>
             <tr class="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
-              <th class="py-3 pr-4 pl-4 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Vendor</th>
+              <th class="py-3 pr-4 pl-4 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Counterparty</th>
               <th class="py-3 px-4 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Amount</th>
               <th class="py-3 px-4 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">%</th>
               <th class="py-3 px-4 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Txns</th>
@@ -146,7 +146,7 @@ export function renderSankeyPage({
   targets,
   stats,
   subtitle,
-  vendorTable,
+  counterpartyTable,
 }: SankeyPageOptions): string {
   const breadcrumbs = renderAnalysisBreadcrumbs({
     statementId,
@@ -166,13 +166,13 @@ export function renderSankeyPage({
     height: 400,
   });
 
-  const vendorTableHtml = vendorTable
-    ? renderVendorTableSection(
-        vendorTable.title,
-        vendorTable.vendors,
+  const counterpartyTableHtml = counterpartyTable
+    ? renderCounterpartyTableSection(
+        counterpartyTable.title,
+        counterpartyTable.counterparties,
         source.value,
-        vendorTable.categories,
-        vendorTable.returnPath
+        counterpartyTable.categories,
+        counterpartyTable.returnPath
       )
     : "";
 
@@ -190,7 +190,7 @@ export function renderSankeyPage({
       ${sankeyChart}
     </div>
 
-    ${vendorTableHtml}
+    ${counterpartyTableHtml}
   `;
 
   return layout({

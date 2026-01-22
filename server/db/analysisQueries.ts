@@ -12,21 +12,21 @@ export interface CategorySpending {
 }
 
 /**
- * Spending data for a vendor in analysis view
+ * Spending data for a counterparty in analysis view
  */
-export interface VendorSpending {
+export interface CounterpartySpending {
   id: number;
   name: string;
   total: number;
   transactionCount: number;
-  /** Vendor's category info (for category selector) */
+  /** Counterparty's category info (for category selector) */
   categoryId: number;
   categoryName: string;
   categoryColor: string | null;
 }
 
 /**
- * Transaction data for vendor drill-down
+ * Transaction data for counterparty drill-down
  */
 export interface TransactionData {
   id: number;
@@ -46,13 +46,13 @@ export interface CategoryInfo {
 }
 
 /**
- * Vendor info for breadcrumbs
+ * Counterparty info for breadcrumbs
  */
-export interface VendorInfo {
+export interface CounterpartyInfo {
   id: number;
   name: string;
   category_id: number;
-  parent_vendor_id: number | null;
+  parent_counterparty_id: number | null;
 }
 
 /**
@@ -95,8 +95,8 @@ export function getSpendingByRootCategory(statementId: number): CategorySpending
         COALESCE(SUM(t.amount), 0) AS total,
         COUNT(t.id) AS transactionCount
       FROM transactions t
-      JOIN vendors v ON t.vendor_id = v.id
-      JOIN root_mapping rm ON rm.original_id = v.category_id
+      JOIN counterparties cp ON t.counterparty_id = cp.id
+      JOIN root_mapping rm ON rm.original_id = cp.category_id
       JOIN categories root_cat ON root_cat.id = rm.root_id
       WHERE t.statement_id = ?
       GROUP BY root_cat.id
@@ -139,8 +139,8 @@ export function getSpendingBySubcategory(
         COALESCE(SUM(t.amount), 0) AS total,
         COUNT(t.id) AS transactionCount
       FROM transactions t
-      JOIN vendors v ON t.vendor_id = v.id
-      JOIN descendants d ON d.id = v.category_id
+      JOIN counterparties cp ON t.counterparty_id = cp.id
+      JOIN descendants d ON d.id = cp.category_id
       JOIN categories sub ON sub.id = d.direct_child_id
       WHERE t.statement_id = ?
       GROUP BY sub.id
@@ -151,8 +151,8 @@ export function getSpendingBySubcategory(
 }
 
 /**
- * Get spending for vendors directly in a category (not in subcategories).
- * Used to show "Root" slice when a category has both direct vendors and subcategories.
+ * Get spending for counterparties directly in a category (not in subcategories).
+ * Used to show "Root" slice when a category has both direct counterparties and subcategories.
  */
 export function getDirectSpendingForCategory(
   statementId: number,
@@ -167,9 +167,9 @@ export function getDirectSpendingForCategory(
         COALESCE(SUM(t.amount), 0) AS total,
         COUNT(t.id) AS transactionCount
       FROM transactions t
-      JOIN vendors v ON t.vendor_id = v.id
+      JOIN counterparties cp ON t.counterparty_id = cp.id
       WHERE t.statement_id = ?
-        AND v.category_id = ?
+        AND cp.category_id = ?
       `
     )
     .get(statementId, categoryId) as { total: number; transactionCount: number };
@@ -197,9 +197,9 @@ export function hasSubcategoriesWithSpending(
       )
       SELECT COUNT(*) AS count
       FROM transactions t
-      JOIN vendors v ON t.vendor_id = v.id
+      JOIN counterparties cp ON t.counterparty_id = cp.id
       WHERE t.statement_id = ?
-        AND v.category_id IN (SELECT id FROM descendants)
+        AND cp.category_id IN (SELECT id FROM descendants)
       `
     )
     .get(categoryId, statementId) as { count: number };
@@ -208,13 +208,13 @@ export function hasSubcategoriesWithSpending(
 }
 
 /**
- * Get spending by vendors for a given category (including all subcategories) for a statement.
- * Groups by parent vendor if the vendor has a parent.
+ * Get spending by counterparties for a given category (including all subcategories) for a statement.
+ * Groups by parent counterparty if the counterparty has a parent.
  */
-export function getSpendingByVendor(
+export function getSpendingByCounterparty(
   statementId: number,
   categoryId: number
-): VendorSpending[] {
+): CounterpartySpending[] {
   const db = getDatabase();
 
   return db
@@ -227,99 +227,99 @@ export function getSpendingByVendor(
         JOIN category_descendants cd ON c.parent_category_id = cd.id
       )
       SELECT
-        COALESCE(v.parent_vendor_id, v.id) AS id,
-        COALESCE(pv.name, v.name) AS name,
+        COALESCE(cp.parent_counterparty_id, cp.id) AS id,
+        COALESCE(pcp.name, cp.name) AS name,
         COALESCE(SUM(t.amount), 0) AS total,
         COUNT(t.id) AS transactionCount,
-        COALESCE(pv.category_id, v.category_id) AS categoryId,
+        COALESCE(pcp.category_id, cp.category_id) AS categoryId,
         c.name AS categoryName,
         c.color AS categoryColor
       FROM transactions t
-      JOIN vendors v ON t.vendor_id = v.id
-      LEFT JOIN vendors pv ON pv.id = v.parent_vendor_id
-      JOIN categories c ON c.id = COALESCE(pv.category_id, v.category_id)
+      JOIN counterparties cp ON t.counterparty_id = cp.id
+      LEFT JOIN counterparties pcp ON pcp.id = cp.parent_counterparty_id
+      JOIN categories c ON c.id = COALESCE(pcp.category_id, cp.category_id)
       WHERE t.statement_id = ?
-        AND v.category_id IN (SELECT id FROM category_descendants)
-      GROUP BY COALESCE(v.parent_vendor_id, v.id)
+        AND cp.category_id IN (SELECT id FROM category_descendants)
+      GROUP BY COALESCE(cp.parent_counterparty_id, cp.id)
       ORDER BY total ASC
       `
     )
-    .all(categoryId, statementId) as VendorSpending[];
+    .all(categoryId, statementId) as CounterpartySpending[];
 }
 
 /**
- * Get spending by child vendors of a given parent vendor for a statement.
+ * Get spending by child counterparties of a given parent counterparty for a statement.
  */
-export function getSpendingByChildVendor(
+export function getSpendingByChildCounterparty(
   statementId: number,
-  parentVendorId: number
-): VendorSpending[] {
+  parentCounterpartyId: number
+): CounterpartySpending[] {
   const db = getDatabase();
 
   return db
     .prepare(
       `
       SELECT
-        v.id,
-        v.name,
+        cp.id,
+        cp.name,
         COALESCE(SUM(t.amount), 0) AS total,
         COUNT(t.id) AS transactionCount,
-        v.category_id AS categoryId,
+        cp.category_id AS categoryId,
         c.name AS categoryName,
         c.color AS categoryColor
       FROM transactions t
-      JOIN vendors v ON t.vendor_id = v.id
-      JOIN categories c ON c.id = v.category_id
+      JOIN counterparties cp ON t.counterparty_id = cp.id
+      JOIN categories c ON c.id = cp.category_id
       WHERE t.statement_id = ?
-        AND v.parent_vendor_id = ?
-      GROUP BY v.id
+        AND cp.parent_counterparty_id = ?
+      GROUP BY cp.id
       ORDER BY total ASC
       `
     )
-    .all(statementId, parentVendorId) as VendorSpending[];
+    .all(statementId, parentCounterpartyId) as CounterpartySpending[];
 }
 
 /**
- * Get spending for vendors directly in a category (not in subcategories).
- * Returns vendor-level breakdown for the "Root" slice drill-down.
+ * Get spending for counterparties directly in a category (not in subcategories).
+ * Returns counterparty-level breakdown for the "Root" slice drill-down.
  */
-export function getDirectVendorSpendingForCategory(
+export function getDirectCounterpartySpendingForCategory(
   statementId: number,
   categoryId: number
-): VendorSpending[] {
+): CounterpartySpending[] {
   const db = getDatabase();
 
   return db
     .prepare(
       `
       SELECT
-        COALESCE(v.parent_vendor_id, v.id) AS id,
-        COALESCE(pv.name, v.name) AS name,
+        COALESCE(cp.parent_counterparty_id, cp.id) AS id,
+        COALESCE(pcp.name, cp.name) AS name,
         COALESCE(SUM(t.amount), 0) AS total,
         COUNT(t.id) AS transactionCount,
-        COALESCE(pv.category_id, v.category_id) AS categoryId,
+        COALESCE(pcp.category_id, cp.category_id) AS categoryId,
         c.name AS categoryName,
         c.color AS categoryColor
       FROM transactions t
-      JOIN vendors v ON t.vendor_id = v.id
-      LEFT JOIN vendors pv ON pv.id = v.parent_vendor_id
-      JOIN categories c ON c.id = COALESCE(pv.category_id, v.category_id)
+      JOIN counterparties cp ON t.counterparty_id = cp.id
+      LEFT JOIN counterparties pcp ON pcp.id = cp.parent_counterparty_id
+      JOIN categories c ON c.id = COALESCE(pcp.category_id, cp.category_id)
       WHERE t.statement_id = ?
-        AND v.category_id = ?
-      GROUP BY COALESCE(v.parent_vendor_id, v.id)
+        AND cp.category_id = ?
+      GROUP BY COALESCE(cp.parent_counterparty_id, cp.id)
       ORDER BY total ASC
       `
     )
-    .all(statementId, categoryId) as VendorSpending[];
+    .all(statementId, categoryId) as CounterpartySpending[];
 }
 
 /**
- * Get spending for transactions directly on a parent vendor (not through child vendors).
- * Used to show "Root" slice when a parent vendor has both direct transactions and child vendors.
+ * Get spending for transactions directly on a parent counterparty (not through child counterparties).
+ * Used to show "Root" slice when a parent counterparty has both direct transactions and child counterparties.
  */
-export function getDirectSpendingForVendor(
+export function getDirectSpendingForCounterparty(
   statementId: number,
-  vendorId: number
+  counterpartyId: number
 ): { total: number; transactionCount: number } {
   const db = getDatabase();
 
@@ -331,21 +331,21 @@ export function getDirectSpendingForVendor(
         COUNT(t.id) AS transactionCount
       FROM transactions t
       WHERE t.statement_id = ?
-        AND t.vendor_id = ?
+        AND t.counterparty_id = ?
       `
     )
-    .get(statementId, vendorId) as { total: number; transactionCount: number };
+    .get(statementId, counterpartyId) as { total: number; transactionCount: number };
 
   return result;
 }
 
 /**
- * Get transactions directly on a vendor (not through child vendors).
- * Used for the "Root" slice drill-down in vendor view.
+ * Get transactions directly on a counterparty (not through child counterparties).
+ * Used for the "Root" slice drill-down in counterparty view.
  */
-export function getDirectTransactionsForVendor(
+export function getDirectTransactionsForCounterparty(
   statementId: number,
-  vendorId: number
+  counterpartyId: number
 ): TransactionData[] {
   const db = getDatabase();
 
@@ -359,19 +359,19 @@ export function getDirectTransactionsForVendor(
         t.reference_number AS referenceNumber
       FROM transactions t
       WHERE t.statement_id = ?
-        AND t.vendor_id = ?
+        AND t.counterparty_id = ?
       ORDER BY t.date DESC, t.amount ASC
       `
     )
-    .all(statementId, vendorId) as TransactionData[];
+    .all(statementId, counterpartyId) as TransactionData[];
 }
 
 /**
- * Check if a vendor has child vendors with spending in this statement
+ * Check if a counterparty has child counterparties with spending in this statement
  */
-export function hasChildVendorsWithSpending(
+export function hasChildCounterpartiesWithSpending(
   statementId: number,
-  vendorId: number
+  counterpartyId: number
 ): boolean {
   const db = getDatabase();
 
@@ -380,23 +380,23 @@ export function hasChildVendorsWithSpending(
       `
       SELECT COUNT(*) AS count
       FROM transactions t
-      JOIN vendors v ON t.vendor_id = v.id
+      JOIN counterparties cp ON t.counterparty_id = cp.id
       WHERE t.statement_id = ?
-        AND v.parent_vendor_id = ?
+        AND cp.parent_counterparty_id = ?
       `
     )
-    .get(statementId, vendorId) as { count: number };
+    .get(statementId, counterpartyId) as { count: number };
 
   return result.count > 0;
 }
 
 /**
- * Get transactions for a vendor (including child vendors) for a statement.
+ * Get transactions for a counterparty (including child counterparties) for a statement.
  * Used for the final drill-down level to show individual transactions.
  */
-export function getTransactionsForVendor(
+export function getTransactionsForCounterparty(
   statementId: number,
-  vendorId: number
+  counterpartyId: number
 ): TransactionData[] {
   const db = getDatabase();
 
@@ -409,21 +409,21 @@ export function getTransactionsForVendor(
         t.amount,
         t.reference_number AS referenceNumber
       FROM transactions t
-      JOIN vendors v ON t.vendor_id = v.id
+      JOIN counterparties cp ON t.counterparty_id = cp.id
       WHERE t.statement_id = ?
-        AND (v.id = ? OR v.parent_vendor_id = ?)
+        AND (cp.id = ? OR cp.parent_counterparty_id = ?)
       ORDER BY t.date DESC, t.amount ASC
       `
     )
-    .all(statementId, vendorId, vendorId) as TransactionData[];
+    .all(statementId, counterpartyId, counterpartyId) as TransactionData[];
 }
 
 /**
- * Get vendor total spending for a statement
+ * Get counterparty total spending for a statement
  */
-export function getVendorTotalForStatement(
+export function getCounterpartyTotalForStatement(
   statementId: number,
-  vendorId: number
+  counterpartyId: number
 ): { total: number; transactionCount: number } {
   const db = getDatabase();
 
@@ -434,12 +434,12 @@ export function getVendorTotalForStatement(
         COALESCE(SUM(t.amount), 0) AS total,
         COUNT(t.id) AS transactionCount
       FROM transactions t
-      JOIN vendors v ON t.vendor_id = v.id
+      JOIN counterparties cp ON t.counterparty_id = cp.id
       WHERE t.statement_id = ?
-        AND (v.id = ? OR v.parent_vendor_id = ?)
+        AND (cp.id = ? OR cp.parent_counterparty_id = ?)
       `
     )
-    .get(statementId, vendorId, vendorId) as { total: number; transactionCount: number };
+    .get(statementId, counterpartyId, counterpartyId) as { total: number; transactionCount: number };
 
   return result;
 }
@@ -455,13 +455,13 @@ export function getCategoryById(categoryId: number): CategoryInfo | undefined {
 }
 
 /**
- * Get vendor by ID
+ * Get counterparty by ID
  */
-export function getVendorById(vendorId: number): VendorInfo | undefined {
+export function getCounterpartyById(counterpartyId: number): CounterpartyInfo | undefined {
   const db = getDatabase();
   return db
-    .prepare("SELECT id, name, category_id, parent_vendor_id FROM vendors WHERE id = ?")
-    .get(vendorId) as VendorInfo | undefined;
+    .prepare("SELECT id, name, category_id, parent_counterparty_id FROM counterparties WHERE id = ?")
+    .get(counterpartyId) as CounterpartyInfo | undefined;
 }
 
 /**
@@ -503,27 +503,27 @@ export function getCategoryPath(categoryId: number): CategoryInfo[] {
 }
 
 /**
- * Get ancestor path for a vendor (for breadcrumbs)
+ * Get ancestor path for a counterparty (for breadcrumbs)
  */
-export function getVendorPath(vendorId: number): VendorInfo[] {
+export function getCounterpartyPath(counterpartyId: number): CounterpartyInfo[] {
   const db = getDatabase();
   return db
     .prepare(
       `
       WITH RECURSIVE ancestors AS (
-        SELECT id, name, category_id, parent_vendor_id, 0 AS depth
-        FROM vendors WHERE id = ?
+        SELECT id, name, category_id, parent_counterparty_id, 0 AS depth
+        FROM counterparties WHERE id = ?
         UNION ALL
-        SELECT v.id, v.name, v.category_id, v.parent_vendor_id, a.depth + 1
-        FROM vendors v
-        JOIN ancestors a ON v.id = a.parent_vendor_id
+        SELECT cp.id, cp.name, cp.category_id, cp.parent_counterparty_id, a.depth + 1
+        FROM counterparties cp
+        JOIN ancestors a ON cp.id = a.parent_counterparty_id
       )
-      SELECT id, name, category_id, parent_vendor_id
+      SELECT id, name, category_id, parent_counterparty_id
       FROM ancestors
       ORDER BY depth DESC
       `
     )
-    .all(vendorId) as VendorInfo[];
+    .all(counterpartyId) as CounterpartyInfo[];
 }
 
 /**
@@ -598,8 +598,8 @@ export function getFullCategoryHierarchySpending(
           COALESCE(SUM(t.amount), 0) AS total,
           COUNT(t.id) AS transactionCount
         FROM category_tree cat
-        LEFT JOIN vendors v ON v.category_id = cat.id
-        LEFT JOIN transactions t ON t.vendor_id = v.id AND t.statement_id = ?
+        LEFT JOIN counterparties cp ON cp.category_id = cat.id
+        LEFT JOIN transactions t ON t.counterparty_id = cp.id AND t.statement_id = ?
         GROUP BY cat.id
       )
       SELECT * FROM category_spending
@@ -646,8 +646,8 @@ export function getCategoryWithDescendantsSpending(
           COALESCE(SUM(t.amount), 0) AS total,
           COUNT(t.id) AS transactionCount
         FROM descendants d
-        LEFT JOIN vendors v ON v.category_id = d.id
-        LEFT JOIN transactions t ON t.vendor_id = v.id AND t.statement_id = ?
+        LEFT JOIN counterparties cp ON cp.category_id = d.id
+        LEFT JOIN transactions t ON t.counterparty_id = cp.id AND t.statement_id = ?
         GROUP BY d.id
       )
       SELECT * FROM category_spending
