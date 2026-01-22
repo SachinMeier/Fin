@@ -30,7 +30,7 @@ interface Category {
   created_at: string;
 }
 
-interface DefaultCategory {
+export interface DefaultCategory {
   name: string;
   parent: string | null;
   color: string;
@@ -41,7 +41,7 @@ interface DefaultCategory {
 // 1. Top-level siblings have distinct, bright colors (avoid dark blues/navies)
 // 2. Children are slightly darker than parents
 // 3. All colors maintain high contrast for readability
-const defaultCategories: DefaultCategory[] = [
+export const DEFAULT_CATEGORIES: DefaultCategory[] = [
   // Top-level categories - bright, distinct colors
   { name: "Income", parent: null, color: "#10B981" },      // Emerald green
   { name: "Expenses", parent: null, color: "#F43F5E" },    // Rose red
@@ -162,7 +162,7 @@ router.post("/import-defaults", (_req, res) => {
   let skippedCount = 0;
 
   db.transaction(() => {
-    for (const cat of defaultCategories) {
+    for (const cat of DEFAULT_CATEGORIES) {
       const existing = getCategoryByName(cat.name);
 
       if (existing) {

@@ -12,7 +12,7 @@ interface HomeLink {
 }
 
 const links: HomeLink[] = [
-  { label: "Get Started", href: "/statements/import", variant: "proceed" },
+  { label: "Get Started", href: "/instructions", variant: "proceed" },
   { label: "View Statements", href: "/statements", variant: "normal" },
 ];
 
